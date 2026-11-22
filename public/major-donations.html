@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Donations Above ₹10,000</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <h1>GSB</h1>
+      <a href="/dashboard.html" class="nav-btn">← Dashboard</a>
+      <a href="/events.html" class="nav-btn">Events</a>
+      <a href="/funds.html" class="nav-btn">Funds</a>
+      <a href="/reports.html" class="nav-btn">Reports</a>
+      <a href="/upload-event.html" class="nav-btn admin-btn" id="uploadNavBtn" style="display: none;">+ Upload Event</a>
+    </div>
+    <div class="user-info">
+      <span class="user-pill" id="userLabel"></span>
+      <button class="btn-logout" id="logoutBtn">Logout</button>
+    </div>
+  </header>
+
+  <div class="container">
+    <div class="section">
+      <div class="section-head">
+        <h2>Donations Above ₹10,000</h2>
+        <span class="total-pill" id="majorTotal">Total: ₹0</span>
+      </div>
+      <p class="hint">Showing all contributions strictly above ₹10,000.</p>
+      <div id="majorMsg" class="message"></div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Donor</th>
+              <th>Event / Cause</th>
+              <th>Amount</th>
+              <th>Note</th>
+              <th>Date</th>
+            </tr>
+          </thead>
+          <tbody id="majorTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const token = localStorage.getItem('token');
+    const accessLevel = Number(localStorage.getItem('access_level'));
+    const username = localStorage.getItem('username');
+
+    if (!token) {
+      window.location.href = '/index.html';
+    }
+
+    document.getElementById('userLabel').textContent = `${username} · L${accessLevel}`;
+    document.getElementById('logoutBtn').addEventListener('click', logout);
+
+    if (accessLevel === 1) {
+      document.getElementById('uploadNavBtn').style.display = 'inline-block';
+    }
+
+    function logout() {
+      localStorage.clear();
+      window.location.href = '/index.html';
+    }
+
+    function escapeHtml(str) {
+      return String(str ?? '-')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function formatRupees(val) {
+      return '₹' + Number(val || 0).toLocaleString('en-IN');
+    }
+
+    function formatDate(sqlDate) {
+      if (!sqlDate) return '-';
+      const d = new Date(sqlDate.replace(' ', 'T') + 'Z');
+      return isNaN(d) ? sqlDate : d.toLocaleDateString('en-IN', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+      });
+    }
+
+    async function loadMajorDonations() {
+      const tbody = document.getElementById('majorTableBody');
+      const totalEl = document.getElementById('majorTotal');
+      const msg = document.getElementById('majorMsg');
+      msg.className = 'message';
+
+      try {
+        const res = await fetch('/api/donations/major', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        if (res.status === 401) return logout();
+        const data = await res.json();
+
+        if (!res.ok) {
+          msg.textContent = data.error || 'Could not load major donations';
+          msg.className = 'message error';
+          return;
+        }
+
+        totalEl.textContent = `Total: ${formatRupees(data.total)}`;
+
+        if (data.donations.length === 0) {
+          tbody.innerHTML = `<tr><td colspan="6" class="empty-row">No donations above ₹10,000 yet.</td></tr>`;
+          return;
+        }
+
+        tbody.innerHTML = data.donations.map((d) => {
+          const tag = d.event_tag || 'General';
+          const tagClass = tag === 'General' ? 'event-tag-badge general' : 'event-tag-badge';
+          const offlinePill = d.is_manual ? `<span class="manual-badge">Admin Entry</span>` : '';
+          return `
+            <tr>
+              <td><b>#${d.id}</b></td>
+              <td>${escapeHtml(d.username)}</td>
+              <td><span class="${tagClass}">${escapeHtml(tag)}</span></td>
+              <td class="amount-cell">${formatRupees(d.amount)}${offlinePill}</td>
+              <td>${escapeHtml(d.note || '—')}</td>
+              <td>${formatDate(d.created_at)}</td>
+            </tr>
+          `;
+        }).join('');
+      } catch {
+        msg.textContent = 'Could not connect to server.';
+        msg.className = 'message error';
+      }
+    }
+
+    loadMajorDonations();
+  </script>
+  <script src="nav.js"></script>
+</body>
+</html>

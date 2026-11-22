@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Community Funds</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <div class="header-left" id="navLinks">
+      <h1>GSB</h1>
+    </div>
+    <div class="user-info" id="userControls"></div>
+  </header>
+
+  <div class="container">
+    <!-- Separate Subtotal Event Display -->
+    <div class="subtotal-card">
+      <div>
+        <h2>Subtotal (All Funds)</h2>
+        <p class="subtotal-sub" id="subtotalBreakdown">Combined total across General &amp; all events</p>
+      </div>
+      <div class="subtotal-amount" id="subtotalValue">₹0</div>
+    </div>
+
+    <!-- Breakdown by Event -->
+    <div class="section">
+      <h2>Event Funds</h2>
+      <p class="hint">Public transparency ledger — visible to everyone.</p>
+      <div id="fundsMsg" class="message"></div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Event / Cause</th>
+              <th>Event Date</th>
+              <th>Total Fund</th>
+            </tr>
+          </thead>
+          <tbody id="fundsTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const token = localStorage.getItem('token');
+    const accessLevel = Number(localStorage.getItem('access_level'));
+    const username = localStorage.getItem('username');
+
+    // Adapt header depending on whether visitor is logged in or a guest
+    const navLinks = document.getElementById('navLinks');
+    const userControls = document.getElementById('userControls');
+
+    if (token) {
+      navLinks.innerHTML += `
+        <a href="/dashboard.html" class="nav-btn">Dashboard</a>
+        <a href="/events.html" class="nav-btn">Events</a>
+        <a href="/major-donations.html" class="nav-btn">₹10,000+ Donations</a>
+        ${accessLevel === 1 ? '<a href="/upload-event.html" class="nav-btn admin-btn">+ Upload Event</a>' : ''}
+      `;
+      userControls.innerHTML = `
+        <span class="user-pill">${escapeHtml(username)} · L${accessLevel}</span>
+        <button class="btn-logout" onclick="logout()">Logout</button>
+      `;
+    } else {
+      navLinks.innerHTML += `
+        <a href="/index.html" class="nav-btn">Sign In</a>
+        <a href="/signup.html" class="nav-btn admin-btn">Sign Up</a>
+      `;
+    }
+
+    function logout() {
+      localStorage.clear();
+      window.location.href = '/index.html';
+    }
+
+    function escapeHtml(str) {
+      return String(str ?? '-')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function formatRupees(val) {
+      return '₹' + Number(val || 0).toLocaleString('en-IN');
+    }
+
+    async function loadFunds() {
+      const subtotalVal = document.getElementById('subtotalValue');
+      const breakdown = document.getElementById('subtotalBreakdown');
+      const tbody = document.getElementById('fundsTableBody');
+      const msg = document.getElementById('fundsMsg');
+      msg.className = 'message';
+
+      try {
+        const res = await fetch('/api/funds');
+        const data = await res.json();
+
+        if (!res.ok) {
+          msg.textContent = data.error || 'Could not load funds';
+          msg.className = 'message error';
+          return;
+        }
+
+        const subtotalAmount = data.subtotal ? data.subtotal.total_fund : 0;
+        const generalFund = data.general_fund || 0;
+        const eventsOnly = subtotalAmount - generalFund;
+
+        subtotalVal.textContent = formatRupees(subtotalAmount);
+        breakdown.textContent = `General: ${formatRupees(generalFund)}  ·  Events: ${formatRupees(eventsOnly)}`;
+
+        const rows = [];
+
+        // General Donations row
+        rows.push(`
+          <tr>
+            <td><span class="event-tag-badge general">General</span></td>
+            <td>—</td>
+            <td class="amount-cell">${formatRupees(generalFund)}</td>
+          </tr>
+        `);
+
+        // Each Event's total_fund
+        for (const ev of data.events) {
+          rows.push(`
+            <tr>
+              <td><span class="event-tag-badge">${escapeHtml(ev.title)}</span></td>
+              <td>${escapeHtml(ev.event_date || '—')}</td>
+              <td class="amount-cell">${formatRupees(ev.total_fund)}</td>
+            </tr>
+          `);
+        }
+
+        tbody.innerHTML = rows.join('');
+      } catch {
+        msg.textContent = 'Could not connect to server.';
+        msg.className = 'message error';
+      }
+    }
+
+    loadFunds();
+  </script>
+  <script src="nav.js"></script>
+</body>
+</html>

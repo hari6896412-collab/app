@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign Up</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="center-page">
+  <div class="card">
+    <h2>Join In!</h2>
+    <p class="hint">A Level 1 admin will approve your account.</p>
+
+    <form id="signupForm">
+      <label for="username">Username</label>
+      <input type="text" id="username" placeholder="Pick a username" required autocomplete="username" />
+
+      <label for="email">Email</label>
+      <input type="email" id="email" placeholder="you@example.com" required autocomplete="email" />
+
+      <label for="password">Password</label>
+      <div class="password-wrap">
+        <input type="password" id="password" placeholder="Create password" required autocomplete="new-password" />
+        <button type="button" class="toggle-pw" onclick="togglePassword('password', this)">Show</button>
+      </div>
+
+      <label for="confirmPassword">Confirm Password</label>
+      <div class="password-wrap">
+        <input type="password" id="confirmPassword" placeholder="Repeat password" required autocomplete="new-password" />
+        <button type="button" class="toggle-pw" onclick="togglePassword('confirmPassword', this)">Show</button>
+      </div>
+
+      <label for="accessLevel">Access Level</label>
+      <select id="accessLevel">
+        <option value="2">Level 2 (Operator)</option>
+        <option value="1">Level 1 (Admin)</option>
+      </select>
+
+      <button type="submit" class="btn-full">Sign Up</button>
+      <div id="signupMsg" class="message"></div>
+    </form>
+
+    <p class="auth-switch">
+      Already have an account? <a href="/index.html">Sign In</a>
+    </p>
+  </div>
+
+  <script>
+    if (localStorage.getItem('token')) {
+      window.location.href = '/dashboard.html';
+    }
+
+    function togglePassword(inputId, btn) {
+      const input = document.getElementById(inputId);
+      const isHidden = input.type === 'password';
+      input.type = isHidden ? 'text' : 'password';
+      btn.textContent = isHidden ? 'Hide' : 'Show';
+    }
+
+    const form = document.getElementById('signupForm');
+    const msg = document.getElementById('signupMsg');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      msg.className = 'message';
+
+      const username = document.getElementById('username').value.trim();
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+      const confirmPassword = document.getElementById('confirmPassword').value;
+      const access_level = Number(document.getElementById('accessLevel').value);
+
+      if (password !== confirmPassword) {
+        msg.textContent = 'Passwords do not match.';
+        msg.className = 'message error';
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/signup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, email, password, access_level }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          msg.textContent = data.error || 'Sign up failed';
+          msg.className = 'message error';
+          return;
+        }
+
+        msg.textContent = data.message;
+        msg.className = 'message success';
+        form.reset();
+      } catch {
+        msg.textContent = 'Could not connect to server.';
+        msg.className = 'message error';
+      }
+    });
+  </script>
+</body>
+</html>

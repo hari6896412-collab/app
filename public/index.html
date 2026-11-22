@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign In</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="center-page">
+  <div class="card">
+    <h2>Welcome Back!</h2>
+    <p class="hint">Sign in to your account.</p>
+
+    <form id="loginForm">
+      <label for="username">Username</label>
+      <input type="text" id="username" placeholder="Enter username" required autocomplete="username" />
+
+      <label for="password">Password</label>
+      <div class="password-wrap">
+        <input type="password" id="password" placeholder="Enter password" required autocomplete="current-password" />
+        <button type="button" class="toggle-pw" onclick="togglePassword('password', this)">Show</button>
+      </div>
+
+      <button type="submit" class="btn-full">Sign In</button>
+      <div id="loginMsg" class="message"></div>
+    </form>
+
+    <p class="auth-switch">
+      New here? <a href="/signup.html">Create an account</a>
+    </p>
+    <p class="auth-switch">
+      <a href="/funds.html">View Community Funds</a>
+    </p>
+  </div>
+
+  <script>
+    if (localStorage.getItem('token')) {
+      window.location.href = '/dashboard.html';
+    }
+
+    function togglePassword(inputId, btn) {
+      const input = document.getElementById(inputId);
+      const isHidden = input.type === 'password';
+      input.type = isHidden ? 'text' : 'password';
+      btn.textContent = isHidden ? 'Hide' : 'Show';
+    }
+
+    const form = document.getElementById('loginForm');
+    const msg = document.getElementById('loginMsg');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      msg.className = 'message';
+
+      const username = document.getElementById('username').value.trim();
+      const password = document.getElementById('password').value;
+
+      try {
+        const res = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          msg.textContent = data.error || 'Login failed';
+          msg.className = 'message error';
+          return;
+        }
+
+        localStorage.setItem('token', data.token);
+        localStorage.setItem('access_level', data.access_level);
+        localStorage.setItem('username', username);
+        window.location.href = '/dashboard.html';
+      } catch {
+        msg.textContent = 'Could not connect to server.';
+        msg.className = 'message error';
+      }
+    });
+  </script>
+</body>
+</html>

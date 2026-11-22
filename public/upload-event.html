@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Upload Event (Admin)</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <h1>GSB</h1>
+      <a href="/dashboard.html" class="nav-btn">Dashboard</a>
+      <a href="/events.html" class="nav-btn">← Events</a>
+    </div>
+    <div class="user-info">
+      <span class="user-pill" id="userLabel"></span>
+      <button class="btn-logout" id="logoutBtn">Logout</button>
+    </div>
+  </header>
+
+  <div class="container">
+    <div class="section">
+      <h2>Write an Event Article</h2>
+      <p class="hint">Admin-only editor. Mix headings, text paragraphs, and pictures in any order.</p>
+
+      <form id="eventForm">
+        <div class="form-grid">
+          <div>
+            <label for="eventTitle">Main Article Title</label>
+            <input type="text" id="eventTitle" placeholder="e.g., Annual Community Meet 2026" required />
+          </div>
+          <div>
+            <label for="eventDate">Event Date (Optional)</label>
+            <input type="date" id="eventDate" />
+          </div>
+        </div>
+
+        <label style="margin-top: 20px;">Article Content Blocks</label>
+        <div class="builder-toolbar">
+          <button type="button" class="tool-btn" onclick="addBlock('heading')">+ Add Heading</button>
+          <button type="button" class="tool-btn add-text" onclick="addBlock('text')">+ Add Text</button>
+          <button type="button" class="tool-btn add-pic" onclick="addBlock('image')">+ Add Picture</button>
+        </div>
+
+        <div id="blocksContainer"></div>
+
+        <button type="submit" class="publish-btn" id="publishBtn">Publish Event Article</button>
+        <div id="uploadMsg" class="message"></div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    const token = localStorage.getItem('token');
+    const accessLevel = Number(localStorage.getItem('access_level'));
+    const username = localStorage.getItem('username');
+
+    if (!token) {
+      window.location.href = '/index.html';
+    } else if (accessLevel !== 1) {
+      window.location.href = '/events.html';
+    }
+
+    document.getElementById('userLabel').textContent = `${username} · L${accessLevel}`;
+    document.getElementById('logoutBtn').addEventListener('click', logout);
+
+    function logout() {
+      localStorage.clear();
+      window.location.href = '/index.html';
+    }
+
+    let blocks = [];
+    let nextId = 1;
+
+    function addBlock(type) {
+      blocks.push({ id: nextId++, type, content: '', dataUrl: '', caption: '' });
+      renderBuilder();
+    }
+
+    function removeBlock(id) {
+      blocks = blocks.filter((b) => b.id !== id);
+      renderBuilder();
+    }
+
+    function moveBlock(index, direction) {
+      const target = index + direction;
+      if (target < 0 || target >= blocks.length) return;
+      [blocks[index], blocks[target]] = [blocks[target], blocks[index]];
+      renderBuilder();
+    }
+
+    function updateField(id, field, value) {
+      const b = blocks.find((item) => item.id === id);
+      if (b) b[field] = value;
+    }
+
+    function handleImageFile(id, fileInput) {
+      const file = fileInput.files[0];
+      if (!file) return;
+
+      if (file.size > 5 * 1024 * 1024) {
+        alert('Please choose an image smaller than 5 MB.');
+        fileInput.value = '';
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        updateField(id, 'dataUrl', reader.result);
+        renderBuilder();
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function escapeAttr(str) {
+      return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function renderBuilder() {
+      const container = document.getElementById('blocksContainer');
+      if (blocks.length === 0) {
+        container.innerHTML = `<p class="hint">Click a button above to add a heading, text, or picture.</p>`;
+        return;
+      }
+
+      container.innerHTML = blocks.map((b, idx) => {
+        const label = b.type === 'heading' ? 'Heading' : b.type === 'text' ? 'Text' : 'Picture';
+        let bodyHtml = '';
+
+        if (b.type === 'heading') {
+          bodyHtml = `
+            <input type="text" placeholder="Section heading..." value="${escapeAttr(b.content)}"
+              oninput="updateField(${b.id}, 'content', this.value)" />
+          `;
+        } else if (b.type === 'text') {
+          bodyHtml = `
+            <textarea placeholder="Write your article text here..."
+              oninput="updateField(${b.id}, 'content', this.value)">${escapeAttr(b.content)}</textarea>
+          `;
+        } else if (b.type === 'image') {
+          const preview = b.dataUrl
+            ? `<img src="${b.dataUrl}" class="img-preview" alt="Preview" />`
+            : '';
+          bodyHtml = `
+            <input type="file" accept="image/png,image/jpeg,image/gif,image/webp"
+              onchange="handleImageFile(${b.id}, this)" />
+            ${preview}
+            <label>Caption (Optional)</label>
+            <input type="text" placeholder="Describe this picture..." value="${escapeAttr(b.caption)}"
+              oninput="updateField(${b.id}, 'caption', this.value)" />
+          `;
+        }
+
+        return `
+          <div class="block-item">
+            <div class="block-top">
+              <span class="block-label">${label}</span>
+              <div class="block-actions">
+                <button type="button" class="mini-btn" onclick="moveBlock(${idx}, -1)" ${idx === 0 ? 'disabled' : ''}>↑</button>
+                <button type="button" class="mini-btn" onclick="moveBlock(${idx}, 1)" ${idx === blocks.length - 1 ? 'disabled' : ''}>↓</button>
+                <button type="button" class="mini-btn danger" onclick="removeBlock(${b.id})">✕</button>
+              </div>
+            </div>
+            ${bodyHtml}
+          </div>
+        `;
+      }).join('');
+    }
+
+    document.getElementById('eventForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById('uploadMsg');
+      const btn = document.getElementById('publishBtn');
+      msg.className = 'message';
+
+      const title = document.getElementById('eventTitle').value.trim();
+      const event_date = document.getElementById('eventDate').value;
+
+      btn.disabled = true;
+      btn.textContent = 'Publishing...';
+
+      try {
+        const res = await fetch('/api/events', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ title, event_date, blocks }),
+        });
+
+        if (res.status === 401) return logout();
+        const data = await res.json();
+
+        if (!res.ok) {
+          msg.textContent = data.error || 'Could not publish event';
+          msg.className = 'message error';
+          btn.disabled = false;
+          btn.textContent = 'Publish Event Article';
+          return;
+        }
+
+        msg.textContent = 'Event published! Redirecting to Events...';
+        msg.className = 'message success';
+        setTimeout(() => {
+          window.location.href = '/events.html';
+        }, 900);
+      } catch {
+        msg.textContent = 'Could not connect to server.';
+        msg.className = 'message error';
+        btn.disabled = false;
+        btn.textContent = 'Publish Event Article';
+      }
+    });
+
+    addBlock('heading');
+    addBlock('text');
+  </script>
+  <script src="nav.js"></script>
+</body>
+</html>

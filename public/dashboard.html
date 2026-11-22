@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <h1>GSB</h1>
+      <a href="/events.html" class="nav-btn">Events</a>
+      <a href="/funds.html" class="nav-btn">Funds</a>
+      <a href="/reports.html" class="nav-btn">Reports</a>
+      <a href="/major-donations.html" class="nav-btn">₹10,000+ Donations</a>
+      <a href="/upload-event.html" class="nav-btn admin-btn" id="uploadNavBtn" style="display: none;">+ Upload Event</a>
+    </div>
+    <div class="user-info">
+      <span class="user-pill" id="userLabel"></span>
+      <button class="btn-logout" id="logoutBtn">Logout</button>
+    </div>
+  </header>
+
+  <div class="container">
+    <!-- Make a Donation (All Logged-In Users) -->
+    <div class="section">
+      <h2>Make a Donation</h2>
+      <p class="hint">Test mode — no real money is charged. An acknowledgement letter is emailed after donating.</p>
+
+      <div class="quick-amounts">
+        <button type="button" class="chip-btn" onclick="setAmount(500)">₹500</button>
+        <button type="button" class="chip-btn" onclick="setAmount(1000)">₹1,000</button>
+        <button type="button" class="chip-btn" onclick="setAmount(5000)">₹5,000</button>
+        <button type="button" class="chip-btn" onclick="setAmount(15000)">₹15,000</button>
+      </div>
+
+      <form id="donateForm">
+        <div class="donate-grid">
+          <div>
+            <label for="donateAmount">Amount (₹)</label>
+            <input type="number" id="donateAmount" min="1" step="any" placeholder="500" required />
+          </div>
+          <div>
+            <label for="donateEventTag">Event / Cause</label>
+            <select id="donateEventTag" class="event-tag-select">
+              <option value="General">General</option>
+            </select>
+          </div>
+          <div>
+            <label for="donateNote">Note (Optional)</label>
+            <input type="text" id="donateNote" maxlength="150" placeholder="Add a short message..." />
+          </div>
+          <button type="submit" id="donateSubmitBtn">Donate Now</button>
+        </div>
+        <div id="donateMsg" class="message"></div>
+      </form>
+    </div>
+
+    <!-- Personal Donations Only -->
+    <div class="section">
+      <div class="section-head">
+        <h2>My Donations</h2>
+        <span class="total-pill" id="totalDonations">My Total: ₹0</span>
+      </div>
+      <p class="hint">Only your personal donations are shown here.</p>
+      <div id="donationsMsg" class="message"></div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Event / Cause</th>
+              <th>Amount</th>
+              <th>Note</th>
+              <th>Date</th>
+            </tr>
+          </thead>
+          <tbody id="donationsTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- LEVEL 1 ONLY: Record Offline Donation in Someone's Name -->
+    <div class="section" id="adminDonateSection" style="display: none;">
+      <h2>Record Donation in Someone's Name (Admin)</h2>
+      <p class="hint">Offline/manual entry — does not require payment and sends <b>no</b> acknowledgement email.</p>
+
+      <form id="adminDonateForm">
+        <div class="donate-grid">
+          <div>
+            <label for="proxyUserSelect">Donor Account</label>
+            <select id="proxyUserSelect" onchange="toggleCustomDonor()">
+              <option value="custom">-- Custom / Unregistered Name --</option>
+            </select>
+          </div>
+          <div id="customDonorWrap">
+            <label for="customDonorName">Donor Name</label>
+            <input type="text" id="customDonorName" maxlength="80" placeholder="Enter person's name" />
+          </div>
+          <div>
+            <label for="proxyAmount">Amount (₹)</label>
+            <input type="number" id="proxyAmount" min="1" step="any" placeholder="1000" required />
+          </div>
+          <div>
+            <label for="proxyEventTag">Event / Cause</label>
+            <select id="proxyEventTag" class="event-tag-select">
+              <option value="General">General</option>
+            </select>
+          </div>
+          <div>
+            <label for="proxyNote">Note (Optional)</label>
+            <input type="text" id="proxyNote" maxlength="150" placeholder="e.g., Cash received" />
+          </div>
+          <button type="submit" id="proxySubmitBtn">Record Entry</button>
+        </div>
+        <div id="proxyMsg" class="message"></div>
+      </form>
+    </div>
+
+    <!-- LEVEL 1 ONLY: Expenses Manager -->
+    <div class="section" id="expensesSection" style="display: none;">
+      <div class="section-head">
+        <h2>Expenses (Admin Only)</h2>
+        <span class="total-pill expense-pill" id="totalExpenses">Total Spent: ₹0</span>
+      </div>
+      <p class="hint">Track all expenses with both an Event tag and a Type tag.</p>
+
+      <form id="expenseForm">
+        <div class="donate-grid">
+          <div>
+            <label for="expenseAmount">Amount (₹)</label>
+            <input type="number" id="expenseAmount" min="1" step="any" placeholder="500" required />
+          </div>
+          <div>
+            <label for="expenseEventTag">Event Tag</label>
+            <select id="expenseEventTag" class="event-tag-select">
+              <option value="General">General</option>
+            </select>
+          </div>
+          <div>
+            <label for="expenseTypeSelect">Type Tag</label>
+            <select id="expenseTypeSelect" onchange="toggleCustomExpenseType()">
+              <option value="Venue">Venue</option>
+              <option value="Food & Catering">Food &amp; Catering</option>
+              <option value="Transport">Transport</option>
+              <option value="Supplies">Supplies</option>
+              <option value="Equipment">Equipment</option>
+              <option value="Utilities">Utilities</option>
+              <option value="Publicity">Publicity</option>
+              <option value="Miscellaneous">Miscellaneous</option>
+              <option value="__custom__">Other (Custom)...</option>
+            </select>
+          </div>
+          <div id="customExpenseTypeWrap" style="display: none;">
+            <label for="customExpenseType">Custom Type</label>
+            <input type="text" id="customExpenseType" maxlength="60" placeholder="Enter expense type" />
+          </div>
+          <div>
+            <label for="expenseNote">Note (Optional)</label>
+            <input type="text" id="expenseNote" maxlength="150" placeholder="Details..." />
+          </div>
+          <button type="submit" style="background: var(--red); color: var(--white);">Add Expense</button>
+        </div>
+        <div id="expenseMsg" class="message"></div>
+      </form>
+
+      <div class="table-wrap" style="margin-top: 20px;">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Event Tag</th>
+              <th>Type Tag</th>
+              <th>Amount</th>
+              <th>Note</th>
+              <th>Date</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="expensesTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- LEVEL 1 ONLY: Generate Financial Reports -->
+    <div class="section" id="reportGenSection" style="display: none;">
+      <div class="section-head">
+        <h2>Generate Financial Report</h2>
+        <a href="/reports.html" class="nav-btn">View All Reports →</a>
+      </div>
+      <p class="hint">Generates total donations and itemized expenses under each category. Viewable by admins and operators.</p>
+
+      <form id="reportGenForm">
+        <div class="donate-grid">
+          <div>
+            <label for="reportType">Report Type</label>
+            <select id="reportType" onchange="updateReportFields()">
+              <option value="event">Event Report</option>
+              <option value="monthly">Monthly Report</option>
+              <option value="quarterly">Quarterly Report</option>
+              <option value="half_yearly">Half-Yearly Report</option>
+              <option value="yearly">Yearly Report</option>
+            </select>
+          </div>
+
+          <div id="repEventWrap">
+            <label for="reportEventTag">Select Event</label>
+            <select id="reportEventTag" class="event-tag-select">
+              <option value="General">General</option>
+            </select>
+          </div>
+
+          <div id="repYearWrap" style="display: none;">
+            <label for="reportYear">Year</label>
+            <input type="number" id="reportYear" min="2000" max="2100" />
+          </div>
+
+          <div id="repMonthWrap" style="display: none;">
+            <label for="reportMonth">Month</label>
+            <select id="reportMonth">
+              <option value="1">January</option>
+              <option value="2">February</option>
+              <option value="3">March</option>
+              <option value="4">April</option>
+              <option value="5">May</option>
+              <option value="6">June</option>
+              <option value="7">July</option>
+              <option value="8">August</option>
+              <option value="9">September</option>
+              <option value="10">October</option>
+              <option value="11">November</option>
+              <option value="12">December</option>
+            </select>
+          </div>
+
+          <div id="repQuarterWrap" style="display: none;">
+            <label for="reportQuarter">Quarter</label>
+            <select id="reportQuarter">
+              <option value="1">Q1 (Jan – Mar)</option>
+              <option value="2">Q2 (Apr – Jun)</option>
+              <option value="3">Q3 (Jul – Sep)</option>
+              <option value="4">Q4 (Oct – Dec)</option>
+            </select>
+          </div>
+
+          <div id="repHalfWrap" style="display: none;">
+            <label for="reportHalf">Half-Year</label>
+            <select id="reportHalf">
+              <option value="1">H1 (Jan – Jun)</option>
+              <option value="2">H2 (Jul – Dec)</option>
+            </select>
+          </div>
+
+          <button type="submit" style="background: var(--lavender);">Generate Report</button>
+        </div>
+        <div id="reportGenMsg" class="message"></div>
+      </form>
+    </div>
+
+    <!-- LEVEL 1 ONLY: Accounts Database -->
+    <div class="section" id="dbSection" style="display: none;">
+      <h2>All Accounts</h2>
+      <p class="hint">Passwords stay hidden. Approve or reject pending requests below.</p>
+      <div id="tableMsg" class="message"></div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Username</th>
+              <th>Email</th>
+              <th>Level</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="usersTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const token = localStorage.getItem('token');
+    const accessLevel = Number(localStorage.getItem('access_level'));
+    const username = localStorage.getItem('username');
+
+    if (!token) {
+      window.location.href = '/index.html';
+    }
+
+    document.getElementById('userLabel').textContent = `${username} · L${accessLevel}`;
+    document.getElementById('logoutBtn').addEventListener('click', logout);
+
+    const now = new Date();
+    document.getElementById('reportYear').value = now.getFullYear();
+    document.getElementById('reportMonth').value = String(now.getMonth() + 1);
+
+    function logout() {
+      localStorage.clear();
+      window.location.href = '/index.html';
+    }
+
+    function setAmount(val) {
+      document.getElementById('donateAmount').value = val;
+    }
+
+    function escapeHtml(str) {
+      return String(str ?? '-')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function formatRupees(val) {
+      return '₹' + Number(val || 0).toLocaleString('en-IN');
+    }
+
+    function formatDate(sqlDate) {
+      if (!sqlDate) return '-';
+      const d = new Date(sqlDate.replace(' ', 'T') + 'Z');
+      return isNaN(d) ? sqlDate : d.toLocaleDateString('en-IN', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+      });
+    }
+
+    function toggleCustomDonor() {
+      const sel = document.getElementById('proxyUserSelect').value;
+      document.getElementById('customDonorWrap').style.display = sel === 'custom' ? 'block' : 'none';
+    }
+
+    function toggleCustomExpenseType() {
+      const sel = document.getElementById('expenseTypeSelect').value;
+      document.getElementById('customExpenseTypeWrap').style.display = sel === '__custom__' ? 'block' : 'none';
+    }
+
+    function updateReportFields() {
+      const type = document.getElementById('reportType').value;
+      document.getElementById('repEventWrap').style.display = type === 'event' ? 'block' : 'none';
+      document.getElementById('repYearWrap').style.display = type !== 'event' ? 'block' : 'none';
+      document.getElementById('repMonthWrap').style.display = type === 'monthly' ? 'block' : 'none';
+      document.getElementById('repQuarterWrap').style.display = type === 'quarterly' ? 'block' : 'none';
+      document.getElementById('repHalfWrap').style.display = type === 'half_yearly' ? 'block' : 'none';
+    }
+
+    async function loadEventOptions() {
+      try {
+        const res = await fetch('/api/events', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.status === 401) return logout();
+        if (!res.ok) return;
+
+        const data = await res.json();
+        const optionsHtml = `<option value="General">General</option>` +
+          data.events.map((ev) => {
+            const safeTitle = escapeHtml(ev.title);
+            return `<option value="${safeTitle}">${safeTitle}</option>`;
+          }).join('');
+
+        document.querySelectorAll('.event-tag-select').forEach((sel) => {
+          sel.innerHTML = optionsHtml;
+        });
+      } catch {}
+    }
+
+    document.getElementById('donateForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById('donateMsg');
+      const btn = document.getElementById('donateSubmitBtn');
+      msg.className = 'message';
+      msg.textContent = '';
+
+      const amount = Number(document.getElementById('donateAmount').value);
+      const event_tag = document.getElementById('donateEventTag').value;
+      const note = document.getElementById('donateNote').value.trim();
+
+      btn.disabled = true;
+      btn.textContent = 'Processing...';
+
+      try {
+        const res = await fetch('/api/donations', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ amount, event_tag, note }),
+        });
+
+        if (res.status === 401) return logout();
+        const data = await res.json();
+
+        if (!res.ok) {
+          msg.textContent = data.error || 'Could not save donation';
+          msg.className = 'message error';
+          return;
+        }
+
+        msg.textContent = data.message;
+        if (data.emailPreviewUrl && data.emailPreviewUrl.startsWith('https://')) {
+          const link = document.createElement('a');
+          link.href = data.emailPreviewUrl;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          link.className = 'preview-link';
+          link.textContent = 'Preview Email Letter';
+          msg.appendChild(link);
+        }
+        msg.className = 'message success';
+        e.target.reset();
+        loadDonations();
+      } catch {
+        msg.textContent = 'Could not connect to server.';
+        msg.className = 'message error';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Donate Now';
+      }
+    });
+
+    async function loadDonations() {
+      const tbody = document.getElementById('donationsTableBody');
+      const totalEl = document.getElementById('totalDonations');
+      const msg = document.getElementById('donationsMsg');
+      msg.className = 'message';
+
+      try {
+        const res = await fetch('/api/donations', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        if (res.status === 401) return logout();
+        const data = await res.json();
+
+        if (!res.ok) {
+          msg.textContent = data.error || 'Could not load donations';
+          msg.className = 'message error';
+          return;
+        }
+
+        totalEl.textContent = `My Total: ${formatRupees(data.total)}`;
+
+        if (data.donations.length === 0) {
+          tbody.innerHTML = `<tr><td colspan="5" class="empty-row">You haven't made any donations yet.</td></tr>`;
+          return;
+        }
+
+        tbody.innerHTML = data.donations.map((d) => {
+          const tag = d.event_tag || 'General';
+          const tagClass = tag === 'General' ? 'event-tag-badge general' : 'event-tag-badge';
+          const offlinePill = d.is_manual ? `<span class="manual-badge">Admin Entry</span>` : '';
+          return `
+            <tr>
+              <td><b>#${d.id}</b></td>
+              <td><span class="${tagClass}">${escapeHtml(tag)}</span></td>
+              <td class="amount-cell">${formatRupees(d.amount)}${offlinePill}</td>
+              <td>${escapeHtml(d.note || '—')}</td>
+              <td>${formatDate(d.created_at)}</td>
+            </tr>
+          `;
+        }).join('');
+      } catch {
+        msg.textContent = 'Could not connect to server.';
+        msg.className = 'message error';
+      }
+    }
+
+    document.getElementById('adminDonateForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById('proxyMsg');
+      msg.className = 'message';
+
+      const target_user_id = document.getElementById('proxyUserSelect').value;
+      const custom_donor_name = document.getElementById('customDonorName').value.trim();
+      const amount = Number(document.getElementById('proxyAmount').value);
+      const event_tag = document.getElementById('proxyEventTag').value;
+      const note = document.getElementById('proxyNote').value.trim();
+
+      try {
+        const res = await fetch('/api/admin/donations', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ target_user_id, custom_donor_name, amount, event_tag, note }),
+        });
+
+        if (res.status === 401) return logout();
+        const data = await res.json();
+
+        if (!res.ok) {
+          msg.textContent = data.error || 'Could not record entry';
+          msg.className = 'message error';
+          return;
+        }
+
+        msg.textContent = data.message;
+        msg.className = 'message success';
+        e.target.reset();
+        toggleCustomDonor();
+        loadDonations();
+      } catch {
+        msg.textContent = 'Could not connect to server.';
+        msg.className = 'message error';
+      }
+    });
+
+    document.getElementById('expenseForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById('expenseMsg');
+      msg.className = 'message';
+
+      const amount = Number(document.getElementById('expenseAmount').value);
+      const event_tag = document.getElementById('expenseEventTag').value;
+      const selectedType = document.getElementById('expenseTypeSelect').value;
+      const type_tag = selectedType === '__custom__'
+        ? document.getElementById('customExpenseType').value.trim()
+        : selectedType;
+      const note = document.getElementById('expenseNote').value.trim();
+
+      try {
+        const res = await fetch('/api/expenses', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ amount, event_tag, type_tag, note }),
+        });
+
+        if (res.status === 401) return logout();
+        const data = await res.json();
+
+        if (!res.ok) {
+          msg.textContent = data.error || 'Could not save expense';
+          msg.className = 'message error';
+          return;
+        }
+
+        msg.textContent = data.message;
+        msg.className = 'message success';
+        e.target.reset();
+        toggleCustomExpenseType();
+        loadExpenses();
+      } catch {
+        msg.textContent = 'Could not connect to server.';
+        msg.className = 'message error';
+      }
+    });
+
+    async function loadExpenses() {
+      const tbody = document.getElementById('expensesTableBody');
+      const totalEl = document.getElementById('totalExpenses');
+
+      try {
+        const res = await fetch('/api/expenses', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.status === 401) return logout();
+        if (!res.ok) return;
+
+        const data = await res.json();
+        totalEl.textContent = `Total Spent: ${formatRupees(data.total)}`;
+
+        if (data.expenses.length === 0) {
+          tbody.innerHTML = `<tr><td colspan="7" class="empty-row">No expenses recorded yet.</td></tr>`;
+          return;
+        }
+
+        tbody.innerHTML = data.expenses.map((ex) => {
+          const tagClass = ex.event_tag === 'General' ? 'event-tag-badge general' : 'event-tag-badge';
+          return `
+            <tr>
+              <td><b>#${ex.id}</b></td>
+              <td><span class="${tagClass}">${escapeHtml(ex.event_tag)}</span></td>
+              <td><span class="type-tag-badge">${escapeHtml(ex.type_tag)}</span></td>
+              <td class="expense-cell">${formatRupees(ex.amount)}</td>
+              <td>${escapeHtml(ex.note || '—')}</td>
+              <td>${formatDate(ex.created_at)}</td>
+              <td><button class="btn-reject" onclick="deleteExpense(${ex.id})">Delete</button></td>
+            </tr>
+          `;
+        }).join('');
+      } catch {}
+    }
+
+    async function deleteExpense(id) {
+      if (!confirm('Delete this expense?')) return;
+      const res = await fetch(`/api/expenses/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) return logout();
+      loadExpenses();
+    }
+
+    document.getElementById('reportGenForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById('reportGenMsg');
+      msg.className = 'message';
+      msg.textContent = '';
+
+      const payload = {
+        report_type: document.getElementById('reportType').value,
+        event_tag: document.getElementById('reportEventTag').value,
+        year: Number(document.getElementById('reportYear').value),
+        month: Number(document.getElementById('reportMonth').value),
+        quarter: Number(document.getElementById('reportQuarter').value),
+        half: Number(document.getElementById('reportHalf').value),
+      };
+
+      try {
+        const res = await fetch('/api/reports/generate', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(payload),
+        });
+
+        if (res.status === 401) return logout();
+        const data = await res.json();
+
+        if (!res.ok) {
+          msg.textContent = data.error || 'Could not generate report';
+          msg.className = 'message error';
+          return;
+        }
+
+        msg.textContent = data.message + ' ';
+        const link = document.createElement('a');
+        link.href = '/reports.html';
+        link.className = 'preview-link';
+        link.textContent = 'Open Reports Page';
+        msg.appendChild(link);
+        msg.className = 'message success';
+      } catch {
+        msg.textContent = 'Could not connect to server.';
+        msg.className = 'message error';
+      }
+    });
+
+    async function loadUsers() {
+      const tbody = document.getElementById('usersTableBody');
+      const tableMsg = document.getElementById('tableMsg');
+      const proxySelect = document.getElementById('proxyUserSelect');
+      tableMsg.className = 'message';
+
+      try {
+        const res = await fetch('/api/users', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        if (res.status === 401) return logout();
+        const data = await res.json();
+
+        if (!res.ok) {
+          tableMsg.textContent = data.error || 'Could not load users';
+          tableMsg.className = 'message error';
+          return;
+        }
+
+        proxySelect.innerHTML = `<option value="custom">-- Custom / Unregistered Name --</option>` +
+          data.users.map((u) =>
+            `<option value="${u.id}">${escapeHtml(u.username)} (${escapeHtml(u.email)})</option>`
+          ).join('');
+        toggleCustomDonor();
+
+        tbody.innerHTML = data.users.map((u) => {
+          const actions = u.status === 'pending'
+            ? `<button class="btn-approve" onclick="decideUser(${u.id}, 'approved')">Approve</button>
+               <button class="btn-reject" onclick="decideUser(${u.id}, 'rejected')">Reject</button>`
+            : '—';
+
+          return `
+            <tr>
+              <td><b>#${u.id}</b></td>
+              <td>${escapeHtml(u.username)}</td>
+              <td>${escapeHtml(u.email)}</td>
+              <td>Level ${u.access_level}</td>
+              <td><span class="badge ${escapeHtml(u.status)}">${escapeHtml(u.status)}</span></td>
+              <td>${actions}</td>
+            </tr>
+          `;
+        }).join('');
+      } catch {
+        tableMsg.textContent = 'Could not connect to server.';
+        tableMsg.className = 'message error';
+      }
+    }
+
+    async function decideUser(id, decision) {
+      const res = await fetch(`/api/users/${id}/decision`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ decision }),
+      });
+
+      if (res.status === 401) return logout();
+      loadUsers();
+    }
+
+    loadEventOptions();
+    loadDonations();
+    if (accessLevel === 1) {
+      document.getElementById('uploadNavBtn').style.display = 'inline-block';
+      document.getElementById('adminDonateSection').style.display = 'block';
+      document.getElementById('expensesSection').style.display = 'block';
+      document.getElementById('reportGenSection').style.display = 'block';
+      document.getElementById('dbSection').style.display = 'block';
+      updateReportFields();
+      loadExpenses();
+      loadUsers();
+    }
+  </script>
+  <script src="nav.js"></script>
+</body>
+</html>
