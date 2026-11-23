@@ -7,12 +7,7 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header>
-    <div class="header-left" id="navLinks">
-      <h1>GSB</h1>
-    </div>
-    <div class="user-info" id="userControls"></div>
-  </header>
+  <header></header>
 
   <div class="container">
     <!-- Separate Subtotal Event Display -->
@@ -46,37 +41,6 @@
   </div>
 
   <script>
-    const token = localStorage.getItem('token');
-    const accessLevel = Number(localStorage.getItem('access_level'));
-    const username = localStorage.getItem('username');
-
-    // Adapt header depending on whether visitor is logged in or a guest
-    const navLinks = document.getElementById('navLinks');
-    const userControls = document.getElementById('userControls');
-
-    if (token) {
-      navLinks.innerHTML += `
-        <a href="/dashboard.html" class="nav-btn">Dashboard</a>
-        <a href="/events.html" class="nav-btn">Events</a>
-        <a href="/major-donations.html" class="nav-btn">₹10,000+ Donations</a>
-        ${accessLevel === 1 ? '<a href="/upload-event.html" class="nav-btn admin-btn">+ Upload Event</a>' : ''}
-      `;
-      userControls.innerHTML = `
-        <span class="user-pill">${escapeHtml(username)} · L${accessLevel}</span>
-        <button class="btn-logout" onclick="logout()">Logout</button>
-      `;
-    } else {
-      navLinks.innerHTML += `
-        <a href="/index.html" class="nav-btn">Sign In</a>
-        <a href="/signup.html" class="nav-btn admin-btn">Sign Up</a>
-      `;
-    }
-
-    function logout() {
-      localStorage.clear();
-      window.location.href = '/index.html';
-    }
-
     function escapeHtml(str) {
       return String(str ?? '-')
         .replace(/&/g, '&amp;')
@@ -114,8 +78,6 @@
         breakdown.textContent = `General: ${formatRupees(generalFund)}  ·  Events: ${formatRupees(eventsOnly)}`;
 
         const rows = [];
-
-        // General Donations row
         rows.push(`
           <tr>
             <td><span class="event-tag-badge general">General</span></td>
@@ -124,7 +86,6 @@
           </tr>
         `);
 
-        // Each Event's total_fund
         for (const ev of data.events) {
           rows.push(`
             <tr>

@@ -9,11 +9,11 @@
 <body class="center-page">
   <div class="card">
     <h2>Welcome Back!</h2>
-    <p class="hint">Sign in to your account.</p>
+    <p class="hint">Sign in using your unique User ID Number.</p>
 
     <form id="loginForm">
-      <label for="username">Username</label>
-      <input type="text" id="username" placeholder="Enter username" required autocomplete="username" />
+      <label for="loginId">User ID Number</label>
+      <input type="number" id="loginId" placeholder="e.g., 1001" required autocomplete="username" />
 
       <label for="password">Password</label>
       <div class="password-wrap">
@@ -52,14 +52,14 @@
       e.preventDefault();
       msg.className = 'message';
 
-      const username = document.getElementById('username').value.trim();
+      const login_id = Number(document.getElementById('loginId').value);
       const password = document.getElementById('password').value;
 
       try {
         const res = await fetch('/api/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, password }),
+          body: JSON.stringify({ login_id, password }),
         });
 
         const data = await res.json();
@@ -72,7 +72,8 @@
 
         localStorage.setItem('token', data.token);
         localStorage.setItem('access_level', data.access_level);
-        localStorage.setItem('username', username);
+        localStorage.setItem('login_id', data.login_id);
+        localStorage.setItem('username', data.username);
         window.location.href = '/dashboard.html';
       } catch {
         msg.textContent = 'Could not connect to server.';

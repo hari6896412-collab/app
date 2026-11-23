@@ -9,7 +9,7 @@
 <body class="center-page">
   <div class="card">
     <h2>Join In!</h2>
-    <p class="hint">A Level 1 admin will approve your account.</p>
+    <p class="hint">All fields below are mandatory. You will receive a unique ID number to sign in.</p>
 
     <form id="signupForm">
       <label for="username">Username</label>
@@ -31,14 +31,19 @@
       </div>
 
       <label for="accessLevel">Access Level</label>
-      <select id="accessLevel">
+      <select id="accessLevel" required>
         <option value="2">Level 2 (Operator)</option>
         <option value="1">Level 1 (Admin)</option>
       </select>
 
+      <!-- Dynamic typed columns & dropdowns added by Level 0 load here automatically -->
+      <div id="customFieldsContainer"></div>
+
       <button type="submit" class="btn-full">Sign Up</button>
       <div id="signupMsg" class="message"></div>
     </form>
+
+    <div id="assignedIdBox" class="id-highlight-box" style="display: none;"></div>
 
     <p class="auth-switch">
       Already have an account? <a href="/index.html">Sign In</a>
@@ -50,6 +55,16 @@
       window.location.href = '/dashboard.html';
     }
 
+    let customColumns = [];
+
+    function escapeHtml(str) {
+      return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
     function togglePassword(inputId, btn) {
       const input = document.getElementById(inputId);
       const isHidden = input.type === 'password';
@@ -57,12 +72,64 @@
       btn.textContent = isHidden ? 'Hide' : 'Show';
     }
 
+    async function loadCustomUserColumns() {
+      const container = document.getElementById('customFieldsContainer');
+      try {
+        const res = await fetch('/api/schema/users');
+        if (!res.ok) return;
+        const data = await res.json();
+        customColumns = data.columns || [];
+
+        container.innerHTML = customColumns.map((col) => {
+          const type = col.data_type || 'text';
+          const fieldId = `custom_${escapeHtml(col.column_name)}`;
+          let inputHtml = '';
+
+          if (type === 'select') {
+            const opts = Array.isArray(col.options) ? col.options : [];
+            inputHtml = `
+              <select id="${fieldId}" data-col="${escapeHtml(col.column_name)}" required>
+                <option value="">-- Select ${escapeHtml(col.display_label)} --</option>
+                ${opts.map((opt) => `<option value="${escapeHtml(opt)}">${escapeHtml(opt)}</option>`).join('')}
+              </select>
+            `;
+          } else if (type === 'boolean') {
+            inputHtml = `
+              <select id="${fieldId}" data-col="${escapeHtml(col.column_name)}" required>
+                <option value="">-- Select Yes or No --</option>
+                <option value="Yes">Yes</option>
+                <option value="No">No</option>
+              </select>
+            `;
+          } else {
+            const stepAttr = type === 'number' ? ' step="any"' : '';
+            inputHtml = `
+              <input
+                type="${escapeHtml(type)}"${stepAttr}
+                id="${fieldId}"
+                data-col="${escapeHtml(col.column_name)}"
+                placeholder="Enter ${escapeHtml(col.display_label)}"
+                required
+              />
+            `;
+          }
+
+          return `
+            <label for="${fieldId}">${escapeHtml(col.display_label)}</label>
+            ${inputHtml}
+          `;
+        }).join('');
+      } catch {}
+    }
+
     const form = document.getElementById('signupForm');
     const msg = document.getElementById('signupMsg');
+    const idBox = document.getElementById('assignedIdBox');
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       msg.className = 'message';
+      idBox.style.display = 'none';
 
       const username = document.getElementById('username').value.trim();
       const email = document.getElementById('email').value.trim();
@@ -76,11 +143,23 @@
         return;
       }
 
+      const custom_fields = {};
+      for (const col of customColumns) {
+        const input = document.getElementById(`custom_${col.column_name}`);
+        const val = input ? input.value.trim() : '';
+        if (!val) {
+          msg.textContent = `${col.display_label} is mandatory.`;
+          msg.className = 'message error';
+          return;
+        }
+        custom_fields[col.column_name] = val;
+      }
+
       try {
         const res = await fetch('/api/signup', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, email, password, access_level }),
+          body: JSON.stringify({ username, email, password, access_level, custom_fields }),
         });
 
         const data = await res.json();
@@ -93,12 +172,16 @@
 
         msg.textContent = data.message;
         msg.className = 'message success';
+        idBox.innerHTML = `Your Login ID Number: <span>${data.login_id}</span>`;
+        idBox.style.display = 'block';
         form.reset();
       } catch {
         msg.textContent = 'Could not connect to server.';
         msg.className = 'message error';
       }
     });
+
+    loadCustomUserColumns();
   </script>
 </body>
 </html>

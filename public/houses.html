@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Houses & Donor Lookup</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header></header>
+
+  <div class="container">
+    <!-- Top Page Mode Switcher -->
+    <div class="page-tabs">
+      <button type="button" class="page-tab-btn active" id="tabLookupBtn" onclick="switchPageTab('lookup')">
+        Donation Search
+      </button>
+      <button type="button" class="page-tab-btn" id="tabManageBtn" onclick="switchPageTab('manage')">
+        Manage Houses &amp; Members
+      </button>
+    </div>
+
+    <!-- ==========================================
+         TAB 1: SEARCH-BASED DONATION LOOKUP
+         ========================================== -->
+    <div id="lookupTab">
+      <div class="section">
+        <div class="section-head">
+          <h2>Donation Lookup</h2>
+          <span class="total-pill" id="lookupSummaryPill">Loading...</span>
+        </div>
+        <p class="hint">Search by person or house to inspect their total and itemized donations.</p>
+
+        <div class="search-mode-bar">
+          <button type="button" class="filter-btn active" id="modePersonBtn" onclick="setSearchMode('person')">
+            Search by Person
+          </button>
+          <button type="button" class="filter-btn" id="modeHouseBtn" onclick="setSearchMode('house')">
+            Search by House
+          </button>
+        </div>
+
+        <div class="search-bar-wrap">
+          <input
+            type="search"
+            id="donationSearchInput"
+            placeholder="Type a person's name, Login ID (e.g. 1001), email, or house..."
+            autocomplete="off"
+          />
+          <button type="button" class="search-clear-btn" id="clearSearchBtn" onclick="clearDonationSearch()">
+            Clear
+          </button>
+        </div>
+
+        <div class="search-status" id="searchStatus"></div>
+        <div id="searchResultsArea"></div>
+        <div id="detailSpotlight" class="detail-spotlight" style="display: none;"></div>
+      </div>
+    </div>
+
+    <!-- ==========================================
+         TAB 2: MANAGE HOUSES & ASSIGN MEMBERS
+         ========================================== -->
+    <div id="manageTab" style="display: none;">
+      <!-- LEVEL 0 ONLY: Add or Remove Custom Columns in Houses -->
+      <div class="section l0-panel" id="l0HouseColSection" style="display: none;">
+        <h2>Level 0: Manage Houses Columns</h2>
+        <p class="hint">Choose a label and data type (including custom dropdowns). Existing houses with missing values stay error-free.</p>
+        <form id="addHouseColForm">
+          <div class="donate-grid">
+            <div>
+              <label for="newHouseColLabel">Column Label</label>
+              <input type="text" id="newHouseColLabel" placeholder="e.g., Ward, Zone" required />
+            </div>
+            <div>
+              <label for="newHouseColType">Data Type</label>
+              <select id="newHouseColType" onchange="toggleHouseColOptions()">
+                <option value="text">Text</option>
+                <option value="number">Number</option>
+                <option value="date">Date</option>
+                <option value="tel">Phone Number</option>
+                <option value="email">Email Address</option>
+                <option value="boolean">Yes / No</option>
+                <option value="select">Dropdown (Options)</option>
+              </select>
+            </div>
+            <div id="newHouseColOptionsWrap" style="display: none;">
+              <label for="newHouseColOptions">Dropdown Options (comma-separated)</label>
+              <input type="text" id="newHouseColOptions" placeholder="e.g., North, South, East, West" />
+            </div>
+            <button type="submit" style="background: var(--lavender);">+ Add Column</button>
+          </div>
+          <div id="addHouseColMsg" class="message"></div>
+        </form>
+
+        <div id="existingHouseColsWrap" class="custom-cols-wrap"></div>
+      </div>
+
+      <!-- Create House & Assign Members -->
+      <div class="section">
+        <h2>Houses Database</h2>
+        <p class="hint">Create houses and assign people to each house.</p>
+
+        <form id="createHouseForm">
+          <div class="donate-grid" id="createHouseGrid">
+            <div>
+              <label for="houseName">House Name</label>
+              <input type="text" id="houseName" placeholder="e.g., Rose Villa" required />
+            </div>
+            <div>
+              <label for="houseNumber">House Number / Code</label>
+              <input type="text" id="houseNumber" placeholder="e.g., H-12" />
+            </div>
+          </div>
+          <button type="submit" style="background: var(--green);">Create House</button>
+          <div id="houseCreateMsg" class="message"></div>
+        </form>
+
+        <hr class="dashed-divider" />
+
+        <h3 class="report-subhead">Assign a Person to a House</h3>
+        <form id="assignMemberForm">
+          <div class="donate-grid">
+            <div>
+              <label for="assignUserSelect">Select Person</label>
+              <select id="assignUserSelect" required></select>
+            </div>
+            <div>
+              <label for="assignHouseSelect">Select House</label>
+              <select id="assignHouseSelect"></select>
+            </div>
+            <button type="submit">Assign Member</button>
+          </div>
+          <div id="assignMsg" class="message"></div>
+        </form>
+
+        <hr class="dashed-divider" />
+
+        <div class="section-head">
+          <h3 class="report-subhead" style="margin-bottom: 0;">Find a House</h3>
+          <span class="stat-sub" id="houseFilterCount"></span>
+        </div>
+        <div class="search-bar-wrap" style="margin-top: 8px;">
+          <input
+            type="search"
+            id="manageHouseSearch"
+            placeholder="Filter houses by name, number, or member..."
+            autocomplete="off"
+          />
+        </div>
+
+        <div class="table-wrap" style="margin-top: 14px;">
+          <table>
+            <thead id="housesThead"></thead>
+            <tbody id="housesTbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const token = localStorage.getItem('token');
+    const accessLevel = Number(localStorage.getItem('access_level'));
+
+    if (!token) {
+      window.location.href = '/index.html';
+    } else if (accessLevel > 1) {
+      window.location.href = '/dashboard.html';
+    }
+
+    if (accessLevel === 0) {
+      document.getElementById('l0HouseColSection').style.display = 'block';
+    }
+
+    let searchMode = 'person';
+    let peopleData = [];
+    let houseDonationsData = [];
+    let manageHousesData = [];
+    let houseCustomCols = [];
+    let currentMatches = [];
+    let selectedIndex = -1;
+
+    function logout() {
+      localStorage.clear();
+      window.location.href = '/index.html';
+    }
+
+    function escapeHtml(str) {
+      return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function displayCell(val) {
+      return val === null || val === undefined || val === '' ? '—' : escapeHtml(val);
+    }
+
+    function formatRupees(val) {
+      return '₹' + Number(val || 0).toLocaleString('en-IN');
+    }
+
+    function formatDate(sqlDate) {
+      if (!sqlDate) return '—';
+      const d = new Date(sqlDate.replace(' ', 'T') + 'Z');
+      return isNaN(d) ? sqlDate : d.toLocaleDateString('en-IN', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+      });
+    }
+
+    function switchPageTab(tab) {
+      const isLookup = tab === 'lookup';
+      document.getElementById('lookupTab').style.display = isLookup ? 'block' : 'none';
+      document.getElementById('manageTab').style.display = isLookup ? 'none' : 'block';
+      document.getElementById('tabLookupBtn').classList.toggle('active', isLookup);
+      document.getElementById('tabManageBtn').classList.toggle('active', !isLookup);
+    }
+
+    // ==========================================
+    // SEARCH-BASED DONATION LOOKUP LOGIC
+    // ==========================================
+
+    function setSearchMode(mode) {
+      searchMode = mode;
+      selectedIndex = -1;
+      document.getElementById('modePersonBtn').classList.toggle('active', mode === 'person');
+      document.getElementById('modeHouseBtn').classList.toggle('active', mode === 'house');
+
+      const input = document.getElementById('donationSearchInput');
+      input.placeholder = mode === 'person'
+        ? "Type a person's name, Login ID (e.g. 1001), email, or house..."
+        : 'Type a house name, house number, or a member name/ID...';
+
+      updateSummaryPill();
+      runDonationSearch();
+      input.focus();
+    }
+
+    function clearDonationSearch() {
+      const input = document.getElementById('donationSearchInput');
+      input.value = '';
+      selectedIndex = -1;
+      runDonationSearch();
+      input.focus();
+    }
+
+    function updateSummaryPill() {
+      const pill = document.getElementById('lookupSummaryPill');
+      if (searchMode === 'person') {
+        const total = peopleData.reduce((s, p) => s + p.total_donated, 0);
+        pill.textContent = `${peopleData.length} People · ${formatRupees(total)}`;
+      } else {
+        const total = houseDonationsData.reduce((s, h) => s + h.total_donated, 0);
+        pill.textContent = `${houseDonationsData.length} Houses · ${formatRupees(total)}`;
+      }
+    }
+
+    function runDonationSearch() {
+      const rawQuery = document.getElementById('donationSearchInput').value.trim();
+      const q = rawQuery.toLowerCase();
+      const qNumeric = q.replace(/^#/, '');
+
+      const statusEl = document.getElementById('searchStatus');
+      const resultsEl = document.getElementById('searchResultsArea');
+      const detailEl = document.getElementById('detailSpotlight');
+
+      if (!q) {
+        currentMatches = [];
+        selectedIndex = -1;
+        statusEl.textContent = '';
+        detailEl.style.display = 'none';
+        resultsEl.innerHTML = `
+          <div class="empty-search-state">
+            <h3>${searchMode === 'person' ? 'Search for a Person' : 'Search for a House'}</h3>
+            <p class="hint" style="margin-bottom: 0;">
+              ${searchMode === 'person'
+                ? 'Enter a username, Login ID number, email, or house name above to view their donations.'
+                : 'Enter a house name, house number, or any member name/ID above to view that house\'s donations.'}
+            </p>
+          </div>
+        `;
+        return;
+      }
+
+      if (searchMode === 'person') {
+        currentMatches = peopleData.filter((p) => {
+          const nameMatch = String(p.name || '').toLowerCase().includes(q);
+          const idMatch = p.login_id != null && String(p.login_id).includes(qNumeric);
+          const emailMatch = String(p.email || '').toLowerCase().includes(q);
+          const houseMatch = String(p.house_name || '').toLowerCase().includes(q);
+          return nameMatch || idMatch || emailMatch || houseMatch;
+        });
+      } else {
+        currentMatches = houseDonationsData.filter((h) => {
+          const nameMatch = String(h.house_name || '').toLowerCase().includes(q);
+          const numMatch = String(h.house_number || '').toLowerCase().includes(q);
+          const memberMatch = (h.members || []).some(
+            (m) =>
+              String(m.username || '').toLowerCase().includes(q) ||
+              (m.login_id != null && String(m.login_id).includes(qNumeric))
+          );
+          return nameMatch || numMatch || memberMatch;
+        });
+      }
+
+      if (currentMatches.length === 0) {
+        selectedIndex = -1;
+        statusEl.textContent = `0 matches for "${rawQuery}"`;
+        detailEl.style.display = 'none';
+        resultsEl.innerHTML = `
+          <div class="empty-search-state">
+            <h3>No Matches Found</h3>
+            <p class="hint" style="margin-bottom: 0;">Try a different name, Login ID, or switch between Person and House search.</p>
+          </div>
+        `;
+        return;
+      }
+
+      const MAX_VISIBLE = 8;
+      const visibleMatches = currentMatches.slice(0, MAX_VISIBLE);
+
+      if (currentMatches.length === 1) {
+        selectedIndex = 0;
+      } else if (selectedIndex >= visibleMatches.length) {
+        selectedIndex = -1;
+      }
+
+      statusEl.textContent = currentMatches.length > MAX_VISIBLE
+        ? `Showing top ${MAX_VISIBLE} of ${currentMatches.length} matches — keep typing to narrow results.`
+        : `${currentMatches.length} ${currentMatches.length === 1 ? 'match' : 'matches'} found — select one to view donations.`;
+
+      resultsEl.innerHTML = `
+        <div class="search-results-grid">
+          ${visibleMatches.map((item, idx) => renderMatchCard(item, idx)).join('')}
+        </div>
+      `;
+
+      if (selectedIndex >= 0 && currentMatches[selectedIndex]) {
+        renderDetailSpotlight(currentMatches[selectedIndex]);
+      } else {
+        detailEl.style.display = 'none';
+      }
+    }
+
+    function renderMatchCard(item, idx) {
+      const isSelected = idx === selectedIndex ? 'selected' : '';
+
+      if (searchMode === 'person') {
+        const idTag = item.login_id ? `ID #${item.login_id} · ` : '';
+        return `
+          <button type="button" class="result-pick-card ${isSelected}" onclick="selectMatch(${idx})">
+            <div class="result-pick-top">
+              <span class="result-pick-title">${escapeHtml(item.name)}</span>
+              <span class="result-pick-amount">${formatRupees(item.total_donated)}</span>
+            </div>
+            <span class="result-pick-meta">${idTag}${escapeHtml(item.house_name)}</span>
+            <span class="result-pick-meta">${item.donation_count} donation(s)</span>
+          </button>
+        `;
+      }
+
+      const numTag = item.house_number ? ` (${escapeHtml(item.house_number)})` : '';
+      return `
+        <button type="button" class="result-pick-card ${isSelected}" onclick="selectMatch(${idx})">
+          <div class="result-pick-top">
+            <span class="result-pick-title">${escapeHtml(item.house_name)}${numTag}</span>
+            <span class="result-pick-amount">${formatRupees(item.total_donated)}</span>
+          </div>
+          <span class="result-pick-meta">${item.members.length} member(s) · ${item.donation_count} donation(s)</span>
+        </button>
+      `;
+    }
+
+    function selectMatch(idx) {
+      selectedIndex = idx;
+      const cards = document.querySelectorAll('.result-pick-card');
+      cards.forEach((c, i) => c.classList.toggle('selected', i === idx));
+
+      if (currentMatches[idx]) {
+        renderDetailSpotlight(currentMatches[idx]);
+        document.getElementById('detailSpotlight').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }
+
+    function renderDetailSpotlight(item) {
+      const box = document.getElementById('detailSpotlight');
+
+      if (searchMode === 'person') {
+        const rows = item.donations.length
+          ? item.donations.map((d) => `
+              <tr>
+                <td><b>#${d.id}</b></td>
+                <td><span class="event-tag-badge ${d.event_tag === 'General' ? 'general' : ''}">${escapeHtml(d.event_tag)}</span></td>
+                <td class="amount-cell">${formatRupees(d.amount)}${d.is_manual ? '<span class="manual-badge">Admin Entry</span>' : ''}</td>
+                <td>${escapeHtml(d.note || '—')}</td>
+                <td>${formatDate(d.created_at)}</td>
+              </tr>
+            `).join('')
+          : `<tr><td colspan="5" class="empty-row">No donations recorded for this person yet.</td></tr>`;
+
+        box.innerHTML = `
+          <div class="spotlight-head">
+            <div>
+              <h2>${escapeHtml(item.name)}</h2>
+              <div class="event-meta">
+                ${item.login_id ? `<span class="meta-tag">Login ID #${item.login_id}</span>` : '<span class="meta-tag">Offline Donor</span>'}
+                <span class="meta-tag date-tag">${escapeHtml(item.house_name)}</span>
+                ${item.email ? `<span class="meta-tag">${escapeHtml(item.email)}</span>` : ''}
+              </div>
+            </div>
+            <span class="total-pill">Total: ${formatRupees(item.total_donated)}</span>
+          </div>
+
+          <div class="table-wrap" style="margin-top: 0;">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Event / Cause</th>
+                  <th>Amount</th>
+                  <th>Note</th>
+                  <th>Date</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        `;
+      } else {
+        const memberTags = item.members.length
+          ? item.members.map((m) => `<span class="meta-tag">#${m.login_id} ${escapeHtml(m.username)}</span>`).join('')
+          : '<span class="stat-sub">No assigned members</span>';
+
+        const rows = item.donations.length
+          ? item.donations.map((d) => `
+              <tr>
+                <td><b>#${d.id}</b></td>
+                <td>${escapeHtml(d.donor)}${d.login_id ? ` <span class="stat-sub">(#${d.login_id})</span>` : ''}</td>
+                <td><span class="event-tag-badge ${d.event_tag === 'General' ? 'general' : ''}">${escapeHtml(d.event_tag)}</span></td>
+                <td class="amount-cell">${formatRupees(d.amount)}${d.is_manual ? '<span class="manual-badge">Admin Entry</span>' : ''}</td>
+                <td>${escapeHtml(d.note || '—')}</td>
+                <td>${formatDate(d.created_at)}</td>
+              </tr>
+            `).join('')
+          : `<tr><td colspan="6" class="empty-row">No donations from this house yet.</td></tr>`;
+
+        box.innerHTML = `
+          <div class="spotlight-head">
+            <div>
+              <h2>${escapeHtml(item.house_name)} ${item.house_number ? `(${escapeHtml(item.house_number)})` : ''}</h2>
+              <div class="event-meta" style="margin-top: 6px;">${memberTags}</div>
+            </div>
+            <span class="total-pill">House Total: ${formatRupees(item.total_donated)}</span>
+          </div>
+
+          <div class="table-wrap" style="margin-top: 0;">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Donor</th>
+                  <th>Event / Cause</th>
+                  <th>Amount</th>
+                  <th>Note</th>
+                  <th>Date</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        `;
+      }
+
+      box.style.display = 'block';
+    }
+
+    document.getElementById('donationSearchInput').addEventListener('input', () => {
+      selectedIndex = -1;
+      runDonationSearch();
+    });
+
+    // ==========================================
+    // MANAGE HOUSES, COLUMNS & MEMBERS LOGIC
+    // ==========================================
+
+    function toggleHouseColOptions() {
+      const isSelect = document.getElementById('newHouseColType').value === 'select';
+      const wrap = document.getElementById('newHouseColOptionsWrap');
+      const input = document.getElementById('newHouseColOptions');
+      wrap.style.display = isSelect ? 'block' : 'none';
+      input.required = isSelect;
+    }
+
+    function renderExistingHouseColumns() {
+      if (accessLevel !== 0) return;
+      const wrap = document.getElementById('existingHouseColsWrap');
+      if (!wrap) return;
+
+      if (!houseCustomCols.length) {
+        wrap.innerHTML = `<span class="stat-sub">No custom house columns added yet.</span>`;
+        return;
+      }
+
+      wrap.innerHTML = `
+        <div class="custom-cols-title">Active Custom House Columns</div>
+        <div class="custom-col-list">
+          ${houseCustomCols.map((c) => `
+            <span class="custom-col-chip">
+              ${escapeHtml(c.display_label)}
+              <span class="chip-type-tag">${escapeHtml(c.data_type || 'text')}</span>
+              <button
+                type="button"
+                class="chip-remove-btn"
+                title="Remove column"
+                onclick="removeHouseColumn('${escapeHtml(c.column_name)}')"
+              >✕</button>
+            </span>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    async function removeHouseColumn(colName) {
+      const col = houseCustomCols.find((c) => c.column_name === colName);
+      const label = col ? col.display_label : colName;
+
+      if (!confirm(`Remove column "${label}" from houses? All data saved in this column will be permanently deleted.`)) {
+        return;
+      }
+
+      const msg = document.getElementById('addHouseColMsg');
+      msg.className = 'message';
+
+      const res = await fetch(`/api/schema/houses/columns/${encodeURIComponent(colName)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) return logout();
+      const data = await res.json();
+
+      if (!res.ok) {
+        msg.textContent = data.error || 'Could not remove column';
+        msg.className = 'message error';
+        return;
+      }
+
+      msg.textContent = data.message;
+      msg.className = 'message success';
+      loadAll();
+    }
+
+    document.getElementById('addHouseColForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById('addHouseColMsg');
+      msg.className = 'message';
+      const label = document.getElementById('newHouseColLabel').value.trim();
+      const data_type = document.getElementById('newHouseColType').value;
+      const options = data_type === 'select'
+        ? document.getElementById('newHouseColOptions').value
+        : '';
+
+      const res = await fetch('/api/schema/houses/columns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ label, data_type, options }),
+      });
+      if (res.status === 401) return logout();
+      const data = await res.json();
+
+      if (!res.ok) {
+        msg.textContent = data.error || 'Could not add column';
+        msg.className = 'message error';
+        return;
+      }
+
+      msg.textContent = data.message;
+      msg.className = 'message success';
+      e.target.reset();
+      toggleHouseColOptions();
+      loadAll();
+    });
+
+    function renderHouseCreateFields() {
+      const grid = document.getElementById('createHouseGrid');
+      const customHtml = houseCustomCols.map((c) => {
+        const type = c.data_type || 'text';
+        const id = `newHouse_${escapeHtml(c.column_name)}`;
+        let control = '';
+
+        if (type === 'select') {
+          const opts = Array.isArray(c.options) ? c.options : [];
+          control = `
+            <select id="${id}">
+              <option value="">— Optional —</option>
+              ${opts.map((opt) => `<option value="${escapeHtml(opt)}">${escapeHtml(opt)}</option>`).join('')}
+            </select>
+          `;
+        } else if (type === 'boolean') {
+          control = `
+            <select id="${id}">
+              <option value="">— Optional —</option>
+              <option value="Yes">Yes</option>
+              <option value="No">No</option>
+            </select>
+          `;
+        } else {
+          control = `<input type="${escapeHtml(type)}"${type === 'number' ? ' step="any"' : ''} id="${id}" placeholder="${escapeHtml(c.display_label)} (optional)" />`;
+        }
+
+        return `
+          <div>
+            <label for="${id}">${escapeHtml(c.display_label)}</label>
+            ${control}
+          </div>
+        `;
+      }).join('');
+
+      grid.innerHTML = `
+        <div>
+          <label for="houseName">House Name</label>
+          <input type="text" id="houseName" placeholder="e.g., Rose Villa" required />
+        </div>
+        <div>
+          <label for="houseNumber">House Number / Code</label>
+          <input type="text" id="houseNumber" placeholder="e.g., H-12" />
+        </div>
+        ${customHtml}
+      `;
+    }
+
+    document.getElementById('createHouseForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById('houseCreateMsg');
+      msg.className = 'message';
+
+      const house_name = document.getElementById('houseName').value.trim();
+      const house_number = document.getElementById('houseNumber').value.trim();
+      const custom_fields = {};
+      for (const c of houseCustomCols) {
+        const el = document.getElementById(`newHouse_${c.column_name}`);
+        custom_fields[c.column_name] = el ? el.value.trim() : '';
+      }
+
+      const res = await fetch('/api/houses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ house_name, house_number, custom_fields }),
+      });
+      if (res.status === 401) return logout();
+      const data = await res.json();
+
+      if (!res.ok) {
+        msg.textContent = data.error || 'Could not create house';
+        msg.className = 'message error';
+        return;
+      }
+
+      msg.textContent = data.message;
+      msg.className = 'message success';
+      e.target.reset();
+      loadAll();
+    });
+
+    document.getElementById('assignMemberForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById('assignMsg');
+      msg.className = 'message';
+
+      const user_id = Number(document.getElementById('assignUserSelect').value);
+      const houseVal = document.getElementById('assignHouseSelect').value;
+      const house_id = houseVal === '' ? null : Number(houseVal);
+
+      const res = await fetch('/api/houses/assign-member', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ user_id, house_id }),
+      });
+      if (res.status === 401) return logout();
+      const data = await res.json();
+
+      if (!res.ok) {
+        msg.textContent = data.error || 'Assignment failed';
+        msg.className = 'message error';
+        return;
+      }
+
+      msg.textContent = data.message;
+      msg.className = 'message success';
+      loadAll();
+    });
+
+    async function deleteHouse(id) {
+      if (!confirm('Delete this house? Members will be unassigned (not deleted).')) return;
+      const res = await fetch(`/api/houses/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) return logout();
+      loadAll();
+    }
+
+    function renderManageHousesTable() {
+      const q = document.getElementById('manageHouseSearch').value.trim().toLowerCase();
+      const thead = document.getElementById('housesThead');
+      const tbody = document.getElementById('housesTbody');
+      const countEl = document.getElementById('houseFilterCount');
+
+      thead.innerHTML = `
+        <tr>
+          <th>ID</th>
+          <th>House Name</th>
+          <th>Number</th>
+          ${houseCustomCols.map((c) => `<th>${escapeHtml(c.display_label)}</th>`).join('')}
+          <th>Members</th>
+          <th>Action</th>
+        </tr>
+      `;
+
+      const filtered = !q
+        ? manageHousesData
+        : manageHousesData.filter((h) => {
+            const nameHit = String(h.house_name || '').toLowerCase().includes(q);
+            const numHit = String(h.house_number || '').toLowerCase().includes(q);
+            const memberHit = (h.members || []).some((m) =>
+              String(m.username || '').toLowerCase().includes(q) ||
+              String(m.login_id || '').includes(q.replace(/^#/, ''))
+            );
+            return nameHit || numHit || memberHit;
+          });
+
+      countEl.textContent = `${filtered.length} of ${manageHousesData.length} house(s)`;
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="${5 + houseCustomCols.length}" class="empty-row">${
+          manageHousesData.length === 0 ? 'No houses added yet.' : 'No houses match your filter.'
+        }</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = filtered.map((h) => {
+        const membersHtml = h.members.length
+          ? h.members.map((m) => `<span class="meta-tag">#${m.login_id} ${escapeHtml(m.username)}</span>`).join(' ')
+          : '<span class="stat-sub">No members</span>';
+
+        return `
+          <tr>
+            <td><b>#${h.id}</b></td>
+            <td><b>${escapeHtml(h.house_name)}</b></td>
+            <td>${escapeHtml(h.house_number || '—')}</td>
+            ${houseCustomCols.map((c) => `<td>${displayCell(h[c.column_name])}</td>`).join('')}
+            <td><div class="member-chips">${membersHtml}</div></td>
+            <td><button class="btn-reject" onclick="deleteHouse(${h.id})">Delete</button></td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    document.getElementById('manageHouseSearch').addEventListener('input', renderManageHousesTable);
+
+    // ==========================================
+    // LOAD DATA
+    // ==========================================
+
+    async function loadAll() {
+      const [hRes, uRes, byPersonRes, byHouseRes] = await Promise.all([
+        fetch('/api/houses', { headers: { Authorization: `Bearer ${token}` } }),
+        fetch('/api/users', { headers: { Authorization: `Bearer ${token}` } }),
+        fetch('/api/donations/by-person', { headers: { Authorization: `Bearer ${token}` } }),
+        fetch('/api/donations/by-house', { headers: { Authorization: `Bearer ${token}` } }),
+      ]);
+
+      if ([hRes, uRes, byPersonRes, byHouseRes].some((r) => r.status === 401)) return logout();
+
+      const hData = await hRes.json();
+      const uData = await uRes.json();
+      const byPersonData = await byPersonRes.json();
+      const byHouseData = await byHouseRes.json();
+
+      houseCustomCols = hData.custom_columns || [];
+      manageHousesData = hData.houses || [];
+      peopleData = byPersonData.people || [];
+      houseDonationsData = byHouseData.houses || [];
+
+      renderExistingHouseColumns();
+      renderHouseCreateFields();
+      renderManageHousesTable();
+
+      const userSel = document.getElementById('assignUserSelect');
+      userSel.innerHTML = (uData.users || []).map((u) =>
+        `<option value="${u.id}">#${u.login_id} — ${escapeHtml(u.username)} (${escapeHtml(u.house_name || 'No House')})</option>`
+      ).join('');
+
+      const houseSel = document.getElementById('assignHouseSelect');
+      houseSel.innerHTML = `<option value="">-- Remove from House (Unassigned) --</option>` +
+        manageHousesData.map((h) =>
+          `<option value="${h.id}">${escapeHtml(h.house_name)}${h.house_number ? ' (' + escapeHtml(h.house_number) + ')' : ''}</option>`
+        ).join('');
+
+      updateSummaryPill();
+      runDonationSearch();
+    }
+
+    loadAll();
+  </script>
+  <script src="nav.js"></script>
+</body>
+</html>

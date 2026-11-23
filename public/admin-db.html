@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Database Control</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header></header>
+
+  <div class="container">
+    <!-- LEVEL 0 ONLY: Add or Remove Custom Columns -->
+    <div class="section l0-panel" id="l0SchemaSection" style="display: none;">
+      <h2>Level 0: Manage Database Columns</h2>
+      <p class="hint">Columns added to <b>Users</b> become mandatory on Sign Up, while existing records with missing details stay error-free.</p>
+      <form id="schemaForm">
+        <div class="donate-grid">
+          <div>
+            <label for="schemaTable">Target Database</label>
+            <select id="schemaTable">
+              <option value="users">Users Database</option>
+              <option value="houses">Houses Database</option>
+            </select>
+          </div>
+          <div>
+            <label for="schemaLabel">New Column Label</label>
+            <input type="text" id="schemaLabel" placeholder="e.g., Blood Group, Ward" required />
+          </div>
+          <div>
+            <label for="schemaDataType">Data Type</label>
+            <select id="schemaDataType" onchange="toggleSchemaOptions()">
+              <option value="text">Text</option>
+              <option value="number">Number</option>
+              <option value="date">Date</option>
+              <option value="tel">Phone Number</option>
+              <option value="email">Email Address</option>
+              <option value="boolean">Yes / No</option>
+              <option value="select">Dropdown (Options)</option>
+            </select>
+          </div>
+          <div id="schemaOptionsWrap" style="display: none;">
+            <label for="schemaOptions">Dropdown Options (comma-separated)</label>
+            <input type="text" id="schemaOptions" placeholder="e.g., A+, A-, B+, O+" />
+          </div>
+          <button type="submit" style="background: var(--lavender);">+ Add Column</button>
+        </div>
+        <div id="schemaMsg" class="message"></div>
+      </form>
+
+      <div id="existingColsWrap" class="custom-cols-wrap"></div>
+    </div>
+
+    <!-- Database Selector Tabs -->
+    <div class="section">
+      <h2>Complete Database Control</h2>
+      <p class="hint">Full view, edit, and delete access across all tables. User passwords are encrypted and permanently hidden.</p>
+
+      <div class="filter-bar">
+        <button type="button" class="filter-btn active" onclick="switchTab('users', this)">Users</button>
+        <button type="button" class="filter-btn" onclick="switchTab('houses', this)">Houses</button>
+        <button type="button" class="filter-btn" onclick="switchTab('donations', this)">Donations</button>
+        <button type="button" class="filter-btn" onclick="switchTab('events', this)">Events</button>
+        <button type="button" class="filter-btn" onclick="switchTab('expenses', this)">Expenses</button>
+      </div>
+
+      <div id="dbActionMsg" class="message"></div>
+
+      <!-- Inline Edit Box -->
+      <div id="editBox" class="edit-box" style="display: none;"></div>
+
+      <div class="table-wrap" style="margin-top: 16px;">
+        <table>
+          <thead id="dbThead"></thead>
+          <tbody id="dbTbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const token = localStorage.getItem('token');
+    const accessLevel = Number(localStorage.getItem('access_level'));
+
+    if (!token) {
+      window.location.href = '/index.html';
+    } else if (accessLevel > 1) {
+      window.location.href = '/dashboard.html';
+    }
+
+    if (accessLevel === 0) {
+      document.getElementById('l0SchemaSection').style.display = 'block';
+    }
+
+    let activeTab = 'users';
+    let cache = {
+      users: [], userCols: [],
+      houses: [], houseCols: [],
+      donations: [], events: [], expenses: [],
+    };
+
+    function logout() {
+      localStorage.clear();
+      window.location.href = '/index.html';
+    }
+
+    function escapeHtml(str) {
+      return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function formatRupees(val) {
+      return '₹' + Number(val || 0).toLocaleString('en-IN');
+    }
+
+    function displayCell(val) {
+      return val === null || val === undefined || val === '' ? '—' : escapeHtml(val);
+    }
+
+    function toggleSchemaOptions() {
+      const isSelect = document.getElementById('schemaDataType').value === 'select';
+      const wrap = document.getElementById('schemaOptionsWrap');
+      const input = document.getElementById('schemaOptions');
+      wrap.style.display = isSelect ? 'block' : 'none';
+      input.required = isSelect;
+    }
+
+    function renderTypedField(col, inputId, currentValue) {
+      const type = col.data_type || 'text';
+      const safeVal = currentValue === null || currentValue === undefined ? '' : escapeHtml(currentValue);
+
+      if (type === 'select') {
+        const opts = Array.isArray(col.options) ? col.options : [];
+        const fallbackOpt = safeVal && !opts.includes(currentValue)
+          ? `<option value="${safeVal}" selected>${safeVal}</option>`
+          : '';
+        return `
+          <select id="${inputId}">
+            <option value="" ${safeVal === '' ? 'selected' : ''}>— Not Set —</option>
+            ${opts.map((opt) => `<option value="${escapeHtml(opt)}" ${currentValue === opt ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+            ${fallbackOpt}
+          </select>
+        `;
+      }
+
+      if (type === 'boolean') {
+        return `
+          <select id="${inputId}">
+            <option value="" ${safeVal === '' ? 'selected' : ''}>— Not Set —</option>
+            <option value="Yes" ${safeVal === 'Yes' ? 'selected' : ''}>Yes</option>
+            <option value="No" ${safeVal === 'No' ? 'selected' : ''}>No</option>
+          </select>
+        `;
+      }
+
+      const stepAttr = type === 'number' ? ' step="any"' : '';
+      return `<input id="${inputId}" type="${escapeHtml(type)}"${stepAttr} value="${safeVal}" />`;
+    }
+
+    function renderExistingCustomColumns() {
+      if (accessLevel !== 0) return;
+      const wrap = document.getElementById('existingColsWrap');
+      if (!wrap) return;
+
+      const renderList = (table, cols) => {
+        if (!cols.length) {
+          return `<span class="stat-sub">No custom columns added yet.</span>`;
+        }
+        return `
+          <div class="custom-col-list">
+            ${cols.map((c) => `
+              <span class="custom-col-chip">
+                ${escapeHtml(c.display_label)}
+                <span class="chip-type-tag">${escapeHtml(c.data_type || 'text')}</span>
+                <button
+                  type="button"
+                  class="chip-remove-btn"
+                  title="Remove column"
+                  onclick="removeCustomColumn('${table}', '${escapeHtml(c.column_name)}')"
+                >✕</button>
+              </span>
+            `).join('')}
+          </div>
+        `;
+      };
+
+      wrap.innerHTML = `
+        <div class="custom-cols-group">
+          <div class="custom-cols-title">Custom Columns in Users</div>
+          ${renderList('users', cache.userCols)}
+        </div>
+        <div class="custom-cols-group">
+          <div class="custom-cols-title">Custom Columns in Houses</div>
+          ${renderList('houses', cache.houseCols)}
+        </div>
+      `;
+    }
+
+    async function removeCustomColumn(table, colName) {
+      const cols = table === 'users' ? cache.userCols : cache.houseCols;
+      const col = cols.find((c) => c.column_name === colName);
+      const label = col ? col.display_label : colName;
+
+      if (!confirm(`Remove column "${label}" from ${table}? All data saved in this column will be permanently deleted.`)) {
+        return;
+      }
+
+      const msg = document.getElementById('schemaMsg');
+      msg.className = 'message';
+
+      const res = await fetch(`/api/schema/${table}/columns/${encodeURIComponent(colName)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) return logout();
+      const data = await res.json();
+
+      if (!res.ok) {
+        msg.textContent = data.error || 'Could not remove column';
+        msg.className = 'message error';
+        return;
+      }
+
+      msg.textContent = data.message;
+      msg.className = 'message success';
+      closeEdit();
+      loadTabData();
+    }
+
+    function showMsg(text, isError = false) {
+      const el = document.getElementById('dbActionMsg');
+      el.textContent = text;
+      el.className = isError ? 'message error' : 'message success';
+    }
+
+    function closeEdit() {
+      const box = document.getElementById('editBox');
+      box.style.display = 'none';
+      box.innerHTML = '';
+    }
+
+    // Level 0: Add Column
+    document.getElementById('schemaForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById('schemaMsg');
+      msg.className = 'message';
+
+      const table = document.getElementById('schemaTable').value;
+      const label = document.getElementById('schemaLabel').value.trim();
+      const data_type = document.getElementById('schemaDataType').value;
+      const options = data_type === 'select'
+        ? document.getElementById('schemaOptions').value
+        : '';
+
+      const res = await fetch(`/api/schema/${table}/columns`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ label, data_type, options }),
+      });
+      if (res.status === 401) return logout();
+      const data = await res.json();
+
+      if (!res.ok) {
+        msg.textContent = data.error || 'Failed to add column';
+        msg.className = 'message error';
+        return;
+      }
+
+      msg.textContent = data.message;
+      msg.className = 'message success';
+      e.target.reset();
+      toggleSchemaOptions();
+      loadTabData();
+    });
+
+    function switchTab(tab, btn) {
+      activeTab = tab;
+      document.querySelectorAll('.filter-btn').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('dbActionMsg').className = 'message';
+      closeEdit();
+      loadTabData();
+    }
+
+    async function loadTabData() {
+      const [uRes, hRes, dRes, evRes, exRes] = await Promise.all([
+        fetch('/api/users', { headers: { Authorization: `Bearer ${token}` } }),
+        fetch('/api/houses', { headers: { Authorization: `Bearer ${token}` } }),
+        fetch('/api/admin/donations', { headers: { Authorization: `Bearer ${token}` } }),
+        fetch('/api/events', { headers: { Authorization: `Bearer ${token}` } }),
+        fetch('/api/expenses', { headers: { Authorization: `Bearer ${token}` } }),
+      ]);
+
+      if ([uRes, hRes, dRes, evRes, exRes].some((r) => r.status === 401)) return logout();
+
+      const uData = await uRes.json();
+      const hData = await hRes.json();
+      const dData = await dRes.json();
+      const evData = await evRes.json();
+      const exData = await exRes.json();
+
+      cache.users = uData.users || [];
+      cache.userCols = uData.custom_columns || [];
+      cache.houses = hData.houses || [];
+      cache.houseCols = hData.custom_columns || [];
+      cache.donations = dData.donations || [];
+      cache.events = evData.events || [];
+      cache.expenses = exData.expenses || [];
+
+      renderExistingCustomColumns();
+      renderActiveTab();
+    }
+
+    function renderActiveTab() {
+      const thead = document.getElementById('dbThead');
+      const tbody = document.getElementById('dbTbody');
+
+      if (activeTab === 'users') {
+        thead.innerHTML = `
+          <tr>
+            <th>Login ID</th>
+            <th>Username</th>
+            <th>Email</th>
+            <th>Level</th>
+            <th>Status</th>
+            <th>House</th>
+            ${cache.userCols.map((c) => `<th>${escapeHtml(c.display_label)}</th>`).join('')}
+            <th>Action</th>
+          </tr>
+        `;
+        tbody.innerHTML = cache.users.map((u) => `
+          <tr>
+            <td><b>#${u.login_id}</b></td>
+            <td>${escapeHtml(u.username)}</td>
+            <td>${escapeHtml(u.email)}</td>
+            <td>L${u.access_level}</td>
+            <td><span class="badge ${escapeHtml(u.status)}">${escapeHtml(u.status)}</span></td>
+            <td>${escapeHtml(u.house_name || '—')}</td>
+            ${cache.userCols.map((c) => `<td>${displayCell(u[c.column_name])}</td>`).join('')}
+            <td>
+              <button class="btn-approve" onclick="openEditUser(${u.id})">Edit</button>
+              <button class="btn-reject" onclick="deleteRow('/api/users/${u.id}', 'Delete user ${escapeHtml(u.username)}?')">Delete</button>
+            </td>
+          </tr>
+        `).join('');
+      } else if (activeTab === 'houses') {
+        thead.innerHTML = `
+          <tr>
+            <th>ID</th>
+            <th>House Name</th>
+            <th>Number</th>
+            ${cache.houseCols.map((c) => `<th>${escapeHtml(c.display_label)}</th>`).join('')}
+            <th>Members</th>
+            <th>Action</th>
+          </tr>
+        `;
+        tbody.innerHTML = cache.houses.length
+          ? cache.houses.map((h) => `
+              <tr>
+                <td><b>#${h.id}</b></td>
+                <td>${escapeHtml(h.house_name)}</td>
+                <td>${escapeHtml(h.house_number || '—')}</td>
+                ${cache.houseCols.map((c) => `<td>${displayCell(h[c.column_name])}</td>`).join('')}
+                <td>${h.member_count}</td>
+                <td>
+                  <button class="btn-approve" onclick="openEditHouse(${h.id})">Edit</button>
+                  <button class="btn-reject" onclick="deleteRow('/api/houses/${h.id}', 'Delete house ${escapeHtml(h.house_name)}?')">Delete</button>
+                </td>
+              </tr>
+            `).join('')
+          : `<tr><td colspan="${5 + cache.houseCols.length}" class="empty-row">No houses yet. Add them on the Houses page.</td></tr>`;
+      } else if (activeTab === 'donations') {
+        thead.innerHTML = `
+          <tr>
+            <th>#</th>
+            <th>Donor</th>
+            <th>House</th>
+            <th>Event</th>
+            <th>Amount</th>
+            <th>Note</th>
+            <th>Action</th>
+          </tr>
+        `;
+        tbody.innerHTML = cache.donations.length
+          ? cache.donations.map((d) => `
+              <tr>
+                <td><b>#${d.id}</b></td>
+                <td>${escapeHtml(d.donor_display)}</td>
+                <td>${escapeHtml(d.house_name || '—')}</td>
+                <td><span class="event-tag-badge ${d.event_tag === 'General' ? 'general' : ''}">${escapeHtml(d.event_tag)}</span></td>
+                <td class="amount-cell">${formatRupees(d.amount)}${d.is_manual ? '<span class="manual-badge">Admin</span>' : ''}</td>
+                <td>${escapeHtml(d.note || '—')}</td>
+                <td>
+                  <button class="btn-approve" onclick="openEditDonation(${d.id})">Edit</button>
+                  <button class="btn-reject" onclick="deleteRow('/api/donations/${d.id}', 'Delete donation #${d.id}?')">Delete</button>
+                </td>
+              </tr>
+            `).join('')
+          : `<tr><td colspan="7" class="empty-row">No donations recorded.</td></tr>`;
+      } else if (activeTab === 'events') {
+        thead.innerHTML = `
+          <tr>
+            <th>#</th>
+            <th>Title</th>
+            <th>Event Date</th>
+            <th>Total Fund</th>
+            <th>Author</th>
+            <th>Action</th>
+          </tr>
+        `;
+        tbody.innerHTML = cache.events.length
+          ? cache.events.map((ev) => `
+              <tr>
+                <td><b>#${ev.id}</b></td>
+                <td>${escapeHtml(ev.title)}</td>
+                <td>${escapeHtml(ev.event_date || '—')}</td>
+                <td class="amount-cell">${formatRupees(ev.total_fund)}</td>
+                <td>${escapeHtml(ev.author)}</td>
+                <td>
+                  <button class="btn-approve" onclick="openEditEvent(${ev.id})">Edit</button>
+                  <button class="btn-reject" onclick="deleteRow('/api/events/${ev.id}', 'Delete event ${escapeHtml(ev.title)}?')">Delete</button>
+                </td>
+              </tr>
+            `).join('')
+          : `<tr><td colspan="6" class="empty-row">No events yet.</td></tr>`;
+      } else if (activeTab === 'expenses') {
+        thead.innerHTML = `
+          <tr>
+            <th>#</th>
+            <th>Event</th>
+            <th>Type</th>
+            <th>Amount</th>
+            <th>Note</th>
+            <th>Recorded By</th>
+            <th>Action</th>
+          </tr>
+        `;
+        tbody.innerHTML = cache.expenses.length
+          ? cache.expenses.map((ex) => `
+              <tr>
+                <td><b>#${ex.id}</b></td>
+                <td><span class="event-tag-badge ${ex.event_tag === 'General' ? 'general' : ''}">${escapeHtml(ex.event_tag)}</span></td>
+                <td><span class="type-tag-badge">${escapeHtml(ex.type_tag)}</span></td>
+                <td class="expense-cell">${formatRupees(ex.amount)}</td>
+                <td>${escapeHtml(ex.note || '—')}</td>
+                <td>${escapeHtml(ex.recorded_by)}</td>
+                <td>
+                  <button class="btn-approve" onclick="openEditExpense(${ex.id})">Edit</button>
+                  <button class="btn-reject" onclick="deleteRow('/api/expenses/${ex.id}', 'Delete expense #${ex.id}?')">Delete</button>
+                </td>
+              </tr>
+            `).join('')
+          : `<tr><td colspan="7" class="empty-row">No expenses recorded.</td></tr>`;
+      }
+    }
+
+    function eventOptionsHtml(selected) {
+      return `<option value="General" ${selected === 'General' ? 'selected' : ''}>General</option>` +
+        cache.events.map((ev) =>
+          `<option value="${escapeHtml(ev.title)}" ${selected === ev.title ? 'selected' : ''}>${escapeHtml(ev.title)}</option>`
+        ).join('');
+    }
+
+    function openEditUser(id) {
+      const u = cache.users.find((x) => x.id === id);
+      if (!u) return;
+      const box = document.getElementById('editBox');
+      const houseOpts = `<option value="">-- Unassigned --</option>` +
+        cache.houses.map((h) => `<option value="${h.id}" ${u.house_id === h.id ? 'selected' : ''}>${escapeHtml(h.house_name)}</option>`).join('');
+
+      const levelOpts = `
+        ${accessLevel === 0 ? `<option value="0" ${u.access_level === 0 ? 'selected' : ''}>Level 0 (Super Admin)</option>` : ''}
+        <option value="1" ${u.access_level === 1 ? 'selected' : ''}>Level 1 (Admin)</option>
+        <option value="2" ${u.access_level === 2 ? 'selected' : ''}>Level 2 (Operator)</option>
+      `;
+
+      box.innerHTML = `
+        <h3>Edit User #${u.login_id} (Passwords Hidden)</h3>
+        <form onsubmit="saveUser(event, ${u.id})">
+          <div class="donate-grid">
+            <div><label>Username</label><input id="eu_username" value="${escapeHtml(u.username)}" required /></div>
+            <div><label>Email</label><input id="eu_email" type="email" value="${escapeHtml(u.email)}" required /></div>
+            <div><label>Access Level</label><select id="eu_level">${levelOpts}</select></div>
+            <div>
+              <label>Status</label>
+              <select id="eu_status">
+                <option value="approved" ${u.status === 'approved' ? 'selected' : ''}>Approved</option>
+                <option value="pending" ${u.status === 'pending' ? 'selected' : ''}>Pending</option>
+                <option value="rejected" ${u.status === 'rejected' ? 'selected' : ''}>Rejected</option>
+              </select>
+            </div>
+            <div><label>House</label><select id="eu_house">${houseOpts}</select></div>
+            ${cache.userCols.map((c) => `
+              <div>
+                <label>${escapeHtml(c.display_label)} <span class="stat-sub">(${escapeHtml(c.data_type || 'text')})</span></label>
+                ${renderTypedField(c, `eu_c_${escapeHtml(c.column_name)}`, u[c.column_name])}
+              </div>
+            `).join('')}
+          </div>
+          <div class="builder-toolbar" style="margin-bottom:0;">
+            <button type="submit" class="btn-approve">Save Changes</button>
+            <button type="button" class="mini-btn" onclick="closeEdit()">Cancel</button>
+          </div>
+        </form>
+      `;
+      box.style.display = 'block';
+    }
+
+    async function saveUser(e, id) {
+      e.preventDefault();
+      const custom_fields = {};
+      for (const c of cache.userCols) {
+        custom_fields[c.column_name] = document.getElementById(`eu_c_${c.column_name}`).value.trim();
+      }
+      const payload = {
+        username: document.getElementById('eu_username').value.trim(),
+        email: document.getElementById('eu_email').value.trim(),
+        access_level: Number(document.getElementById('eu_level').value),
+        status: document.getElementById('eu_status').value,
+        house_id: document.getElementById('eu_house').value || null,
+        custom_fields,
+      };
+      await sendPut(`/api/users/${id}`, payload);
+    }
+
+    function openEditHouse(id) {
+      const h = cache.houses.find((x) => x.id === id);
+      if (!h) return;
+      const box = document.getElementById('editBox');
+      box.innerHTML = `
+        <h3>Edit House #${h.id}</h3>
+        <form onsubmit="saveHouse(event, ${h.id})">
+          <div class="donate-grid">
+            <div><label>House Name</label><input id="eh_name" value="${escapeHtml(h.house_name)}" required /></div>
+            <div><label>House Number</label><input id="eh_num" value="${escapeHtml(h.house_number || '')}" /></div>
+            ${cache.houseCols.map((c) => `
+              <div>
+                <label>${escapeHtml(c.display_label)} <span class="stat-sub">(${escapeHtml(c.data_type || 'text')})</span></label>
+                ${renderTypedField(c, `eh_c_${escapeHtml(c.column_name)}`, h[c.column_name])}
+              </div>
+            `).join('')}
+          </div>
+          <div class="builder-toolbar" style="margin-bottom:0;">
+            <button type="submit" class="btn-approve">Save Changes</button>
+            <button type="button" class="mini-btn" onclick="closeEdit()">Cancel</button>
+          </div>
+        </form>
+      `;
+      box.style.display = 'block';
+    }
+
+    async function saveHouse(e, id) {
+      e.preventDefault();
+      const custom_fields = {};
+      for (const c of cache.houseCols) {
+        custom_fields[c.column_name] = document.getElementById(`eh_c_${c.column_name}`).value.trim();
+      }
+      await sendPut(`/api/houses/${id}`, {
+        house_name: document.getElementById('eh_name').value.trim(),
+        house_number: document.getElementById('eh_num').value.trim(),
+        custom_fields,
+      });
+    }
+
+    function openEditDonation(id) {
+      const d = cache.donations.find((x) => x.id === id);
+      if (!d) return;
+      const box = document.getElementById('editBox');
+      box.innerHTML = `
+        <h3>Edit Donation #${d.id}</h3>
+        <form onsubmit="saveDonation(event, ${d.id})">
+          <div class="donate-grid">
+            <div><label>Amount (₹)</label><input id="ed_amt" type="number" min="1" step="any" value="${d.amount}" required /></div>
+            <div><label>Event Tag</label><select id="ed_evt">${eventOptionsHtml(d.event_tag)}</select></div>
+            <div><label>Note</label><input id="ed_note" value="${escapeHtml(d.note || '')}" /></div>
+          </div>
+          <div class="builder-toolbar" style="margin-bottom:0;">
+            <button type="submit" class="btn-approve">Save Changes</button>
+            <button type="button" class="mini-btn" onclick="closeEdit()">Cancel</button>
+          </div>
+        </form>
+      `;
+      box.style.display = 'block';
+    }
+
+    async function saveDonation(e, id) {
+      e.preventDefault();
+      await sendPut(`/api/donations/${id}`, {
+        amount: Number(document.getElementById('ed_amt').value),
+        event_tag: document.getElementById('ed_evt').value,
+        note: document.getElementById('ed_note').value.trim(),
+      });
+    }
+
+    function openEditEvent(id) {
+      const ev = cache.events.find((x) => x.id === id);
+      if (!ev) return;
+      const box = document.getElementById('editBox');
+      box.innerHTML = `
+        <h3>Edit Event #${ev.id}</h3>
+        <form onsubmit="saveEvent(event, ${ev.id})">
+          <div class="donate-grid">
+            <div><label>Title</label><input id="eev_title" value="${escapeHtml(ev.title)}" required /></div>
+            <div><label>Event Date</label><input id="eev_date" type="date" value="${escapeHtml(ev.event_date || '')}" /></div>
+          </div>
+          <div class="builder-toolbar" style="margin-bottom:0;">
+            <button type="submit" class="btn-approve">Save Changes</button>
+            <button type="button" class="mini-btn" onclick="closeEdit()">Cancel</button>
+          </div>
+        </form>
+      `;
+      box.style.display = 'block';
+    }
+
+    async function saveEvent(e, id) {
+      e.preventDefault();
+      await sendPut(`/api/events/${id}`, {
+        title: document.getElementById('eev_title').value.trim(),
+        event_date: document.getElementById('eev_date').value,
+      });
+    }
+
+    function openEditExpense(id) {
+      const ex = cache.expenses.find((x) => x.id === id);
+      if (!ex) return;
+      const box = document.getElementById('editBox');
+      box.innerHTML = `
+        <h3>Edit Expense #${ex.id}</h3>
+        <form onsubmit="saveExpense(event, ${ex.id})">
+          <div class="donate-grid">
+            <div><label>Amount (₹)</label><input id="eex_amt" type="number" min="1" step="any" value="${ex.amount}" required /></div>
+            <div><label>Event Tag</label><select id="eex_evt">${eventOptionsHtml(ex.event_tag)}</select></div>
+            <div><label>Type Tag</label><input id="eex_type" value="${escapeHtml(ex.type_tag)}" required /></div>
+            <div><label>Note</label><input id="eex_note" value="${escapeHtml(ex.note || '')}" /></div>
+          </div>
+          <div class="builder-toolbar" style="margin-bottom:0;">
+            <button type="submit" class="btn-approve">Save Changes</button>
+            <button type="button" class="mini-btn" onclick="closeEdit()">Cancel</button>
+          </div>
+        </form>
+      `;
+      box.style.display = 'block';
+    }
+
+    async function saveExpense(e, id) {
+      e.preventDefault();
+      await sendPut(`/api/expenses/${id}`, {
+        amount: Number(document.getElementById('eex_amt').value),
+        event_tag: document.getElementById('eex_evt').value,
+        type_tag: document.getElementById('eex_type').value.trim(),
+        note: document.getElementById('eex_note').value.trim(),
+      });
+    }
+
+    async function sendPut(url, payload) {
+      const res = await fetch(url, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(payload),
+      });
+      if (res.status === 401) return logout();
+      const data = await res.json();
+      if (!res.ok) return showMsg(data.error || 'Update failed', true);
+      showMsg(data.message || 'Saved!');
+      closeEdit();
+      loadTabData();
+    }
+
+    async function deleteRow(url, promptText) {
+      if (!confirm(promptText)) return;
+      const res = await fetch(url, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) return logout();
+      const data = await res.json();
+      if (!res.ok) return showMsg(data.error || 'Delete failed', true);
+      showMsg(data.message || 'Deleted!');
+      closeEdit();
+      loadTabData();
+    }
+
+    loadTabData();
+  </script>
+  <script src="nav.js"></script>
+</body>
+</html>

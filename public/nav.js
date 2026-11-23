@@ -3,9 +3,12 @@
   if (!header) return;
 
   const token = localStorage.getItem('token');
-  const accessLevel = Number(localStorage.getItem('access_level'));
+  const rawLevel = localStorage.getItem('access_level');
+  const accessLevel = rawLevel !== null ? Number(rawLevel) : 2;
   const username = localStorage.getItem('username') || 'User';
+  const loginId = localStorage.getItem('login_id');
   const currentPath = window.location.pathname;
+  const isAdmin = Boolean(token && (accessLevel === 0 || accessLevel === 1));
 
   function escapeHtml(str) {
     return String(str ?? '')
@@ -22,8 +25,12 @@
         { href: '/funds.html', label: 'Funds' },
         { href: '/reports.html', label: 'Reports' },
         { href: '/major-donations.html', label: '₹10,000+ Donations' },
-        ...(accessLevel === 1
-          ? [{ href: '/upload-event.html', label: '+ Upload Event', extraClass: 'menu-item-admin' }]
+        ...(isAdmin
+          ? [
+              { href: '/houses.html', label: 'Houses & Donor Lookup' },
+              { href: '/admin-db.html', label: 'Database Control', extraClass: 'menu-item-admin' },
+              { href: '/upload-event.html', label: '+ Upload Event', extraClass: 'menu-item-admin' },
+            ]
           : []),
       ]
     : [
@@ -49,14 +56,15 @@
        <button type="button" class="menu-item menu-item-logout" id="kebabLogoutBtn">Logout</button>`
     : '';
 
+  const idPart = loginId ? `#${escapeHtml(loginId)} · ` : '';
   const userPillHtml = token
-    ? `<span class="user-pill">${escapeHtml(username)} · L${accessLevel}</span>`
+    ? `<span class="user-pill">${idPart}${escapeHtml(username)} · L${accessLevel}</span>`
     : '';
 
   header.classList.add('has-kebab');
   header.innerHTML = `
     <a href="${token ? '/dashboard.html' : '/index.html'}" class="brand-link">
-      <h1>Account Hub</h1>
+      <h1>GSB ONLINE</h1>
     </a>
 
     <div class="header-right">
@@ -101,9 +109,7 @@
   });
 
   document.addEventListener('click', (e) => {
-    if (!e.target.closest('.kebab-wrap')) {
-      closeMenu();
-    }
+    if (!e.target.closest('.kebab-wrap')) closeMenu();
   });
 
   document.addEventListener('keydown', (e) => {

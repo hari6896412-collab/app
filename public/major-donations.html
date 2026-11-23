@@ -7,20 +7,7 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header>
-    <div class="header-left">
-      <h1>GSB</h1>
-      <a href="/dashboard.html" class="nav-btn">← Dashboard</a>
-      <a href="/events.html" class="nav-btn">Events</a>
-      <a href="/funds.html" class="nav-btn">Funds</a>
-      <a href="/reports.html" class="nav-btn">Reports</a>
-      <a href="/upload-event.html" class="nav-btn admin-btn" id="uploadNavBtn" style="display: none;">+ Upload Event</a>
-    </div>
-    <div class="user-info">
-      <span class="user-pill" id="userLabel"></span>
-      <button class="btn-logout" id="logoutBtn">Logout</button>
-    </div>
-  </header>
+  <header></header>
 
   <div class="container">
     <div class="section">
@@ -51,18 +38,9 @@
 
   <script>
     const token = localStorage.getItem('token');
-    const accessLevel = Number(localStorage.getItem('access_level'));
-    const username = localStorage.getItem('username');
 
     if (!token) {
       window.location.href = '/index.html';
-    }
-
-    document.getElementById('userLabel').textContent = `${username} · L${accessLevel}`;
-    document.getElementById('logoutBtn').addEventListener('click', logout);
-
-    if (accessLevel === 1) {
-      document.getElementById('uploadNavBtn').style.display = 'inline-block';
     }
 
     function logout() {

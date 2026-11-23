@@ -7,17 +7,7 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header>
-    <div class="header-left">
-      <h1>GSB</h1>
-      <a href="/dashboard.html" class="nav-btn">Dashboard</a>
-      <a href="/events.html" class="nav-btn">← Events</a>
-    </div>
-    <div class="user-info">
-      <span class="user-pill" id="userLabel"></span>
-      <button class="btn-logout" id="logoutBtn">Logout</button>
-    </div>
-  </header>
+  <header></header>
 
   <div class="container">
     <div class="section">
@@ -54,16 +44,12 @@
   <script>
     const token = localStorage.getItem('token');
     const accessLevel = Number(localStorage.getItem('access_level'));
-    const username = localStorage.getItem('username');
 
     if (!token) {
       window.location.href = '/index.html';
-    } else if (accessLevel !== 1) {
+    } else if (accessLevel > 1) {
       window.location.href = '/events.html';
     }
-
-    document.getElementById('userLabel').textContent = `${username} · L${accessLevel}`;
-    document.getElementById('logoutBtn').addEventListener('click', logout);
 
     function logout() {
       localStorage.clear();

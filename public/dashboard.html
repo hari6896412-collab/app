@@ -7,26 +7,13 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header>
-    <div class="header-left">
-      <h1>GSB</h1>
-      <a href="/events.html" class="nav-btn">Events</a>
-      <a href="/funds.html" class="nav-btn">Funds</a>
-      <a href="/reports.html" class="nav-btn">Reports</a>
-      <a href="/major-donations.html" class="nav-btn">₹10,000+ Donations</a>
-      <a href="/upload-event.html" class="nav-btn admin-btn" id="uploadNavBtn" style="display: none;">+ Upload Event</a>
-    </div>
-    <div class="user-info">
-      <span class="user-pill" id="userLabel"></span>
-      <button class="btn-logout" id="logoutBtn">Logout</button>
-    </div>
-  </header>
+  <header></header>
 
   <div class="container">
-    <!-- Make a Donation (All Logged-In Users) -->
+    <!-- Make a Donation (All Logged-In Users — Active Events Only) -->
     <div class="section">
       <h2>Make a Donation</h2>
-      <p class="hint">Test mode — no real money is charged. An acknowledgement letter is emailed after donating.</p>
+      <p class="hint">Test mode — no real money is charged. An acknowledgement email &amp; SMS are sent after donating.</p>
 
       <div class="quick-amounts">
         <button type="button" class="chip-btn" onclick="setAmount(500)">₹500</button>
@@ -43,7 +30,7 @@
           </div>
           <div>
             <label for="donateEventTag">Event / Cause</label>
-            <select id="donateEventTag" class="event-tag-select">
+            <select id="donateEventTag">
               <option value="General">General</option>
             </select>
           </div>
@@ -82,10 +69,10 @@
       </div>
     </div>
 
-    <!-- LEVEL 1 ONLY: Record Offline Donation in Someone's Name -->
+    <!-- LEVEL 0 & 1 ONLY: Record Offline Donation in Someone's Name (Includes Ended Events) -->
     <div class="section" id="adminDonateSection" style="display: none;">
       <h2>Record Donation in Someone's Name (Admin)</h2>
-      <p class="hint">Offline/manual entry — does not require payment and sends <b>no</b> acknowledgement email.</p>
+      <p class="hint">Offline/manual entry — available for all events (including ended events), requires no payment, and sends <b>no</b> email or SMS.</p>
 
       <form id="adminDonateForm">
         <div class="donate-grid">
@@ -105,7 +92,7 @@
           </div>
           <div>
             <label for="proxyEventTag">Event / Cause</label>
-            <select id="proxyEventTag" class="event-tag-select">
+            <select id="proxyEventTag">
               <option value="General">General</option>
             </select>
           </div>
@@ -119,7 +106,7 @@
       </form>
     </div>
 
-    <!-- LEVEL 1 ONLY: Expenses Manager -->
+    <!-- LEVEL 0 & 1 ONLY: Expenses Manager -->
     <div class="section" id="expensesSection" style="display: none;">
       <div class="section-head">
         <h2>Expenses (Admin Only)</h2>
@@ -135,7 +122,7 @@
           </div>
           <div>
             <label for="expenseEventTag">Event Tag</label>
-            <select id="expenseEventTag" class="event-tag-select">
+            <select id="expenseEventTag">
               <option value="General">General</option>
             </select>
           </div>
@@ -184,7 +171,7 @@
       </div>
     </div>
 
-    <!-- LEVEL 1 ONLY: Generate Financial Reports -->
+    <!-- LEVEL 0 & 1 ONLY: Generate Financial Reports -->
     <div class="section" id="reportGenSection" style="display: none;">
       <div class="section-head">
         <h2>Generate Financial Report</h2>
@@ -207,7 +194,7 @@
 
           <div id="repEventWrap">
             <label for="reportEventTag">Select Event</label>
-            <select id="reportEventTag" class="event-tag-select">
+            <select id="reportEventTag">
               <option value="General">General</option>
             </select>
           </div>
@@ -259,9 +246,12 @@
       </form>
     </div>
 
-    <!-- LEVEL 1 ONLY: Accounts Database -->
+    <!-- LEVEL 0 & 1 ONLY: Accounts Approvals -->
     <div class="section" id="dbSection" style="display: none;">
-      <h2>All Accounts</h2>
+      <div class="section-head">
+        <h2>All Accounts</h2>
+        <a href="/admin-db.html" class="nav-btn">Full DB Control →</a>
+      </div>
       <p class="hint">Passwords stay hidden. Approve or reject pending requests below.</p>
       <div id="tableMsg" class="message"></div>
 
@@ -269,7 +259,7 @@
         <table>
           <thead>
             <tr>
-              <th>ID</th>
+              <th>Login ID</th>
               <th>Username</th>
               <th>Email</th>
               <th>Level</th>
@@ -286,14 +276,10 @@
   <script>
     const token = localStorage.getItem('token');
     const accessLevel = Number(localStorage.getItem('access_level'));
-    const username = localStorage.getItem('username');
 
     if (!token) {
       window.location.href = '/index.html';
     }
-
-    document.getElementById('userLabel').textContent = `${username} · L${accessLevel}`;
-    document.getElementById('logoutBtn').addEventListener('click', logout);
 
     const now = new Date();
     document.getElementById('reportYear').value = now.getFullYear();
@@ -358,14 +344,33 @@
         if (!res.ok) return;
 
         const data = await res.json();
-        const optionsHtml = `<option value="General">General</option>` +
-          data.events.map((ev) => {
-            const safeTitle = escapeHtml(ev.title);
-            return `<option value="${safeTitle}">${safeTitle}</option>`;
-          }).join('');
 
-        document.querySelectorAll('.event-tag-select').forEach((sel) => {
-          sel.innerHTML = optionsHtml;
+        const activeOptionsHtml = `<option value="General">General</option>` +
+          data.events
+            .filter((ev) => !ev.is_expired)
+            .map((ev) => {
+              const safeTitle = escapeHtml(ev.title);
+              return `<option value="${safeTitle}">${safeTitle}</option>`;
+            })
+            .join('');
+
+        const allOptionsHtml = `<option value="General">General</option>` +
+          data.events
+            .map((ev) => {
+              const safeTitle = escapeHtml(ev.title);
+              const label = ev.is_expired ? `${safeTitle} (Ended)` : safeTitle;
+              return `<option value="${safeTitle}">${label}</option>`;
+            })
+            .join('');
+
+        // Regular user donation form -> active events only
+        const donateSel = document.getElementById('donateEventTag');
+        if (donateSel) donateSel.innerHTML = activeOptionsHtml;
+
+        // Admin offline donations, expenses, and reports -> all events (including ended)
+        ['proxyEventTag', 'expenseEventTag', 'reportEventTag'].forEach((id) => {
+          const sel = document.getElementById(id);
+          if (sel) sel.innerHTML = allOptionsHtml;
         });
       } catch {}
     }
@@ -671,7 +676,7 @@
 
         proxySelect.innerHTML = `<option value="custom">-- Custom / Unregistered Name --</option>` +
           data.users.map((u) =>
-            `<option value="${u.id}">${escapeHtml(u.username)} (${escapeHtml(u.email)})</option>`
+            `<option value="${u.id}">#${u.login_id} — ${escapeHtml(u.username)} (${escapeHtml(u.email)})</option>`
           ).join('');
         toggleCustomDonor();
 
@@ -683,7 +688,7 @@
 
           return `
             <tr>
-              <td><b>#${u.id}</b></td>
+              <td><b>#${u.login_id}</b></td>
               <td>${escapeHtml(u.username)}</td>
               <td>${escapeHtml(u.email)}</td>
               <td>Level ${u.access_level}</td>
@@ -714,8 +719,7 @@
 
     loadEventOptions();
     loadDonations();
-    if (accessLevel === 1) {
-      document.getElementById('uploadNavBtn').style.display = 'inline-block';
+    if (accessLevel <= 1) {
       document.getElementById('adminDonateSection').style.display = 'block';
       document.getElementById('expensesSection').style.display = 'block';
       document.getElementById('reportGenSection').style.display = 'block';

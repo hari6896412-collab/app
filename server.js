@@ -1,12 +1,12 @@
 require('dotenv').config();
-const http = require('http');
+const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const db = require('./db');
-const { getAuthUser, hasLevel } = require('./auth');
+const { requireAuth, requireLevel } = require('./auth');
 const { sendDonationAcknowledgement } = require('./mailer');
 
 if (!process.env.JWT_SECRET) {
@@ -14,68 +14,121 @@ if (!process.env.JWT_SECRET) {
   process.exit(1);
 }
 
+const app = express();
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const UPLOADS_DIR = path.join(PUBLIC_DIR, 'uploads');
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-
-const MIME_TYPES = {
-  '.html': 'text/html; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.js': 'application/javascript; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp',
-  '.ico': 'image/x-icon',
-};
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
 
-function sendJson(res, statusCode, data) {
-  const body = JSON.stringify(data);
-  res.writeHead(statusCode, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Content-Length': Buffer.byteLength(body),
-  });
-  res.end(body);
+const DYNAMIC_TABLES = ['users', 'houses'];
+const RESERVED_COLUMNS = new Set([
+  'id', 'login_id', 'username', 'email', 'password', 'password_hash',
+  'access_level', 'status', 'house_id', 'house_name', 'house_number',
+  'created_by', 'approved_by', 'created_at', 'members', 'member_count',
+]);
+
+const ALLOWED_DATA_TYPES = {
+  text:    { sqlType: "TEXT DEFAULT ''",   label: 'Text' },
+  number:  { sqlType: 'REAL DEFAULT NULL', label: 'Number' },
+  date:    { sqlType: "TEXT DEFAULT ''",   label: 'Date' },
+  tel:     { sqlType: "TEXT DEFAULT ''",   label: 'Phone' },
+  email:   { sqlType: "TEXT DEFAULT ''",   label: 'Email' },
+  boolean: { sqlType: "TEXT DEFAULT ''",   label: 'Yes / No' },
+  select:  { sqlType: "TEXT DEFAULT ''",   label: 'Dropdown' },
+};
+
+app.use(express.json({ limit: '15mb' }));
+app.use(express.static(PUBLIC_DIR));
+
+// ==========================================
+// HELPERS
+// ==========================================
+
+function validateCustomValue(col, rawVal, isRequired) {
+  const type = col.data_type || 'text';
+  const strVal = rawVal === null || rawVal === undefined ? '' : String(rawVal).trim();
+
+  if (strVal === '') {
+    if (isRequired) {
+      return { error: `"${col.display_label}" is mandatory while signing up.` };
+    }
+    return { value: type === 'number' ? null : '' };
+  }
+
+  if (type === 'number') {
+    const num = Number(strVal);
+    if (!Number.isFinite(num)) {
+      return { error: `"${col.display_label}" must be a valid number.` };
+    }
+    return { value: num };
+  }
+
+  if (type === 'date') {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(strVal)) {
+      return { error: `"${col.display_label}" must be a valid date (YYYY-MM-DD).` };
+    }
+    return { value: strVal };
+  }
+
+  if (type === 'email') {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(strVal)) {
+      return { error: `"${col.display_label}" must be a valid email address.` };
+    }
+    return { value: strVal };
+  }
+
+  if (type === 'tel') {
+    if (!/^[+\d][\d\s\-()]{5,20}$/.test(strVal)) {
+      return { error: `"${col.display_label}" must be a valid phone number.` };
+    }
+    return { value: strVal };
+  }
+
+  if (type === 'boolean') {
+    const lower = strVal.toLowerCase();
+    if (['yes', 'true', '1'].includes(lower)) return { value: 'Yes' };
+    if (['no', 'false', '0'].includes(lower)) return { value: 'No' };
+    return { error: `"${col.display_label}" must be "Yes" or "No".` };
+  }
+
+  if (type === 'select') {
+    const allowed = Array.isArray(col.options) ? col.options : [];
+    const matched = allowed.find((opt) => opt.toLowerCase() === strVal.toLowerCase());
+    if (!matched) {
+      return { error: `"${col.display_label}" must be one of: ${allowed.join(', ')}.` };
+    }
+    return { value: matched };
+  }
+
+  return { value: strVal.slice(0, 250) };
 }
 
-function readJsonBody(req) {
-  return new Promise((resolve, reject) => {
-    let raw = '';
-    const MAX_BYTES = 15 * 1024 * 1024;
+function getUserPhoneColumn() {
+  const cols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
 
-    req.on('data', (chunk) => {
-      raw += chunk;
-      if (raw.length > MAX_BYTES) {
-        reject(new Error('PAYLOAD_TOO_LARGE'));
-        req.destroy();
-      }
-    });
+  const registered = db.prepare(`
+    SELECT column_name
+    FROM custom_columns
+    WHERE table_name = 'users' AND LOWER(display_label) = 'phone number'
+    LIMIT 1
+  `).get();
 
-    req.on('end', () => {
-      if (!raw) return resolve({});
-      try {
-        resolve(JSON.parse(raw));
-      } catch {
-        reject(new Error('INVALID_JSON'));
-      }
-    });
+  if (registered && cols.includes(registered.column_name)) {
+    return registered.column_name;
+  }
 
-    req.on('error', reject);
-  });
+  if (cols.includes('Phone Number')) return 'Phone Number';
+  if (cols.includes('phone_number')) return 'phone_number';
+  return null;
 }
 
 function saveBase64Image(dataUrl) {
   const match = String(dataUrl).match(/^data:image\/(png|jpeg|jpg|gif|webp);base64,([A-Za-z0-9+/=]+)$/);
-  if (!match) {
-    throw new Error('INVALID_IMAGE');
-  }
+  if (!match) throw new Error('INVALID_IMAGE');
 
   const ext = match[1] === 'jpeg' ? 'jpg' : match[1];
   const buffer = Buffer.from(match[2], 'base64');
@@ -85,29 +138,20 @@ function saveBase64Image(dataUrl) {
   return `/uploads/${filename}`;
 }
 
-function serveStatic(res, pathname) {
-  const requested = pathname === '/' ? '/index.html' : pathname;
-  const fullPath = path.resolve(PUBLIC_DIR, '.' + requested);
-
-  if (!fullPath.startsWith(PUBLIC_DIR)) {
-    res.writeHead(403, { 'Content-Type': 'text/plain' });
-    return res.end('Forbidden');
-  }
-
-  fs.readFile(fullPath, (err, content) => {
-    if (err) {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      return res.end('404 Not Found');
-    }
-
-    const ext = path.extname(fullPath).toLowerCase();
-    const contentType = MIME_TYPES[ext] || 'application/octet-stream';
-    res.writeHead(200, { 'Content-Type': contentType });
-    res.end(content);
-  });
+function getTodayDateStr() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
-function resolveEventTag(rawTag) {
+function isEventExpired(eventDate) {
+  const clean = String(eventDate || '').trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(clean) && clean < getTodayDateStr();
+}
+
+function resolveEventTag(rawTag, { blockExpired = false } = {}) {
   const cleanTag = String(rawTag || 'General').trim();
   if (!cleanTag || cleanTag.toLowerCase() === 'general') {
     return { valid: true, value: 'General' };
@@ -116,12 +160,26 @@ function resolveEventTag(rawTag) {
     return { valid: false, error: 'Cannot assign "Subtotal" directly as an event tag' };
   }
   const matched = db.prepare(`
-    SELECT title FROM events WHERE title = ? AND LOWER(title) != 'subtotal'
+    SELECT title, event_date FROM events WHERE title = ? AND LOWER(title) != 'subtotal'
   `).get(cleanTag);
   if (!matched) {
     return { valid: false, error: 'Selected event does not exist' };
   }
+  if (blockExpired && isEventExpired(matched.event_date)) {
+    return {
+      valid: false,
+      error: `Donations for "${matched.title}" closed after ${matched.event_date}.`,
+    };
+  }
   return { valid: true, value: matched.title };
+}
+
+function sanitizeColumnName(rawLabel) {
+  return String(rawLabel || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
 }
 
 function buildReportQuery(params) {
@@ -199,7 +257,6 @@ function buildReportQuery(params) {
   };
 }
 
-// Group individual expense records under each category key
 function groupExpensesBy(expenses, keyField) {
   const map = new Map();
 
@@ -225,727 +282,1410 @@ function groupExpensesBy(expenses, keyField) {
   return Array.from(map.values()).sort((a, b) => b.total - a.total);
 }
 
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  const { pathname } = url;
-  const { method } = req;
+// ==========================================
+// DYNAMIC SCHEMA ROUTES (Level 0 Adds & Removes Columns)
+// ==========================================
+
+app.get('/api/schema/:table', (req, res) => {
+  const { table } = req.params;
+  if (!DYNAMIC_TABLES.includes(table)) {
+    return res.status(400).json({ error: 'Invalid table. Use "users" or "houses".' });
+  }
+  const columns = db.getCustomColumns(table);
+  res.json({ table, columns });
+});
+
+app.post('/api/schema/:table/columns', requireAuth, requireLevel(0), (req, res) => {
+  const { table } = req.params;
+  if (!DYNAMIC_TABLES.includes(table)) {
+    return res.status(400).json({ error: 'Columns can only be added to "users" or "houses".' });
+  }
+
+  const displayLabel = String(req.body?.label || '').trim().slice(0, 50);
+  if (!displayLabel) {
+    return res.status(400).json({ error: 'Column label is required' });
+  }
+
+  const dataType = String(req.body?.data_type || 'text').trim().toLowerCase();
+  const typeDef = ALLOWED_DATA_TYPES[dataType];
+  if (!typeDef) {
+    return res.status(400).json({
+      error: `Invalid data_type. Allowed: ${Object.keys(ALLOWED_DATA_TYPES).join(', ')}`,
+    });
+  }
+
+  let cleanOptions = [];
+  if (dataType === 'select') {
+    const rawOptions = Array.isArray(req.body?.options)
+      ? req.body.options
+      : String(req.body?.options || '').split(',');
+
+    const seen = new Set();
+    for (const item of rawOptions) {
+      const opt = String(item ?? '').trim().slice(0, 80);
+      if (opt && !seen.has(opt.toLowerCase())) {
+        seen.add(opt.toLowerCase());
+        cleanOptions.push(opt);
+      }
+    }
+
+    if (cleanOptions.length < 1) {
+      return res.status(400).json({
+        error: 'Please provide at least one dropdown option (comma-separated).',
+      });
+    }
+  }
+
+  const colName = sanitizeColumnName(req.body?.column_name || displayLabel);
+  if (!/^[a-z][a-z0-9_]{1,40}$/.test(colName)) {
+    return res.status(400).json({
+      error: 'Column name must start with a letter and be 2–41 characters (letters, numbers, spaces/underscores).',
+    });
+  }
+
+  if (RESERVED_COLUMNS.has(colName)) {
+    return res.status(400).json({ error: `"${colName}" is a reserved system column name.` });
+  }
+
+  const existingCols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+  if (existingCols.includes(colName)) {
+    return res.status(409).json({ error: `Column "${colName}" already exists in ${table}.` });
+  }
+
+  db.exec(`ALTER TABLE ${table} ADD COLUMN "${colName}" ${typeDef.sqlType}`);
+  db.prepare(`
+    INSERT INTO custom_columns (table_name, column_name, display_label, data_type, options_json, created_by)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(table, colName, displayLabel, dataType, JSON.stringify(cleanOptions), req.user.id);
+
+  res.status(201).json({
+    message: `Column "${displayLabel}" (${typeDef.label}) added to ${table}.`,
+    column: {
+      table_name: table,
+      column_name: colName,
+      display_label: displayLabel,
+      data_type: dataType,
+      options: cleanOptions,
+    },
+  });
+});
+
+app.delete('/api/schema/:table/columns/:columnName', requireAuth, requireLevel(0), (req, res) => {
+  const { table, columnName } = req.params;
+  if (!DYNAMIC_TABLES.includes(table)) {
+    return res.status(400).json({ error: 'Columns can only be removed from "users" or "houses".' });
+  }
+
+  const colName = String(columnName || '').trim().toLowerCase();
+  if (!/^[a-z][a-z0-9_]{1,40}$/.test(colName) || RESERVED_COLUMNS.has(colName)) {
+    return res.status(400).json({ error: 'System or invalid columns cannot be removed.' });
+  }
+
+  const registered = db.prepare(`
+    SELECT id, display_label
+    FROM custom_columns
+    WHERE table_name = ? AND column_name = ?
+  `).get(table, colName);
+
+  if (!registered) {
+    return res.status(404).json({ error: `Custom column "${colName}" not found in ${table}.` });
+  }
+
+  const existingCols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
 
   try {
-    // 1. POST /api/login
-    if (method === 'POST' && pathname === '/api/login') {
-      const { username, password } = await readJsonBody(req);
-      if (!username || !password) {
-        return sendJson(res, 400, { error: 'Username and password are required' });
+    const dropColumn = db.transaction(() => {
+      if (existingCols.includes(colName)) {
+        db.exec(`ALTER TABLE ${table} DROP COLUMN "${colName}"`);
       }
-
-      const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
-      if (!user || !bcrypt.compareSync(password, user.password_hash)) {
-        return sendJson(res, 401, { error: 'Invalid credentials' });
-      }
-
-      if (user.status !== 'approved') {
-        return sendJson(res, 403, {
-          error: `Account is currently '${user.status}' and requires Level 1 approval`,
-        });
-      }
-
-      const token = jwt.sign(
-        { id: user.id, username: user.username, access_level: user.access_level },
-        process.env.JWT_SECRET,
-        { expiresIn: '2h' }
-      );
-
-      return sendJson(res, 200, { token, access_level: user.access_level });
-    }
-
-    // 2. POST /api/signup
-    if (method === 'POST' && pathname === '/api/signup') {
-      const { username, email, password, access_level = 2 } = await readJsonBody(req);
-
-      if (!username || !email || !password) {
-        return sendJson(res, 400, { error: 'Username, email, and password are required' });
-      }
-
-      if (![1, 2].includes(Number(access_level))) {
-        return sendJson(res, 400, { error: 'access_level must be 1 or 2' });
-      }
-
-      const passwordHash = bcrypt.hashSync(password, 10);
-
-      try {
-        const result = db.prepare(`
-          INSERT INTO users (username, email, password_hash, access_level, status, created_by, approved_by)
-          VALUES (?, ?, ?, ?, 'pending', NULL, NULL)
-        `).run(username, email, passwordHash, Number(access_level));
-
-        return sendJson(res, 201, {
-          message: 'Account request submitted! Wait for Level 1 approval before logging in.',
-          user: {
-            id: result.lastInsertRowid,
-            username,
-            email,
-            access_level: Number(access_level),
-            status: 'pending',
-          },
-        });
-      } catch (err) {
-        if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
-          return sendJson(res, 409, { error: 'Username or email already exists' });
-        }
-        return sendJson(res, 500, { error: 'Database error' });
-      }
-    }
-
-    // 3. GET /api/users (Level 1 ONLY — passwords excluded)
-    if (method === 'GET' && pathname === '/api/users') {
-      const user = getAuthUser(req);
-      if (!user) return sendJson(res, 401, { error: 'Invalid or missing token' });
-      if (!hasLevel(user, 1)) return sendJson(res, 403, { error: 'Forbidden: Level 1 required' });
-
-      const users = db.prepare(`
-        SELECT id, username, email, access_level, status, created_by, approved_by, created_at
-        FROM users
-      `).all();
-
-      return sendJson(res, 200, { count: users.length, users });
-    }
-
-    // 4. POST /api/users (Level 1 or 2)
-    if (method === 'POST' && pathname === '/api/users') {
-      const authUser = getAuthUser(req);
-      if (!authUser) return sendJson(res, 401, { error: 'Invalid or missing token' });
-      if (!hasLevel(authUser, 1, 2)) {
-        return sendJson(res, 403, { error: 'Forbidden: insufficient access level' });
-      }
-
-      const { username, email, password, access_level = 2 } = await readJsonBody(req);
-      if (!username || !email || !password) {
-        return sendJson(res, 400, { error: 'username, email, and password are required' });
-      }
-
-      if (![1, 2].includes(Number(access_level))) {
-        return sendJson(res, 400, { error: 'access_level must be 1 or 2' });
-      }
-
-      const passwordHash = bcrypt.hashSync(password, 10);
-      const isLevel1 = authUser.access_level === 1;
-      const status = isLevel1 ? 'approved' : 'pending';
-      const approvedBy = isLevel1 ? authUser.id : null;
-
-      try {
-        const result = db.prepare(`
-          INSERT INTO users (username, email, password_hash, access_level, status, created_by, approved_by)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(username, email, passwordHash, Number(access_level), status, authUser.id, approvedBy);
-
-        return sendJson(res, 201, {
-          message: isLevel1
-            ? 'Account created and approved.'
-            : 'Account created and awaiting Level 1 approval.',
-          user: {
-            id: result.lastInsertRowid,
-            username,
-            email,
-            access_level: Number(access_level),
-            status,
-            created_by: authUser.id,
-            approved_by: approvedBy,
-          },
-        });
-      } catch (err) {
-        if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
-          return sendJson(res, 409, { error: 'Username or email already exists' });
-        }
-        return sendJson(res, 500, { error: 'Database error' });
-      }
-    }
-
-    // 5. PATCH /api/users/:id/decision (Level 1 ONLY)
-    const decisionMatch = pathname.match(/^\/api\/users\/(\d+)\/decision$/);
-    if (method === 'PATCH' && decisionMatch) {
-      const authUser = getAuthUser(req);
-      if (!authUser) return sendJson(res, 401, { error: 'Invalid or missing token' });
-      if (!hasLevel(authUser, 1)) return sendJson(res, 403, { error: 'Forbidden: Level 1 required' });
-
-      const id = Number(decisionMatch[1]);
-      const { decision } = await readJsonBody(req);
-
-      if (!['approved', 'rejected'].includes(decision)) {
-        return sendJson(res, 400, { error: 'decision must be "approved" or "rejected"' });
-      }
-
-      const targetUser = db.prepare('SELECT id, status FROM users WHERE id = ?').get(id);
-      if (!targetUser) return sendJson(res, 404, { error: 'User not found' });
-      if (targetUser.status !== 'pending') {
-        return sendJson(res, 400, { error: `User is already ${targetUser.status}` });
-      }
-
-      db.prepare('UPDATE users SET status = ?, approved_by = ? WHERE id = ?')
-        .run(decision, authUser.id, id);
-
-      return sendJson(res, 200, {
-        message: `User ${id} has been ${decision}.`,
-        approved_by: authUser.id,
-      });
-    }
-
-    // 6. GET /api/donations (Logged-in user's OWN donations only)
-    if (method === 'GET' && pathname === '/api/donations') {
-      const authUser = getAuthUser(req);
-      if (!authUser) return sendJson(res, 401, { error: 'Invalid or missing token' });
-
-      const donations = db.prepare(`
-        SELECT d.id,
-               CASE WHEN d.donor_name != '' THEN d.donor_name ELSE u.username END AS username,
-               d.amount, d.event_tag, d.note, d.is_manual, d.created_at
-        FROM donations d
-        JOIN users u ON d.user_id = u.id
-        WHERE d.user_id = ? AND (d.donor_name = '' OR d.donor_name = u.username)
-        ORDER BY d.id DESC
-      `).all(authUser.id);
-
-      const total = donations.reduce((sum, d) => sum + d.amount, 0);
-      return sendJson(res, 200, { total, count: donations.length, donations });
-    }
-
-    // 6b. GET /api/donations/major (All donations above ₹10,000)
-    if (method === 'GET' && pathname === '/api/donations/major') {
-      const authUser = getAuthUser(req);
-      if (!authUser) return sendJson(res, 401, { error: 'Invalid or missing token' });
-
-      const donations = db.prepare(`
-        SELECT d.id,
-               CASE WHEN d.donor_name != '' THEN d.donor_name ELSE u.username END AS username,
-               d.amount, d.event_tag, d.note, d.is_manual, d.created_at
-        FROM donations d
-        JOIN users u ON d.user_id = u.id
-        WHERE d.amount > 10000
-        ORDER BY d.id DESC
-      `).all();
-
-      const total = donations.reduce((sum, d) => sum + d.amount, 0);
-      return sendJson(res, 200, { total, count: donations.length, donations });
-    }
-
-    // 7. POST /api/donations (Standard user donation -> sends acknowledgement email)
-    if (method === 'POST' && pathname === '/api/donations') {
-      const authUser = getAuthUser(req);
-      if (!authUser) return sendJson(res, 401, { error: 'Invalid or missing token' });
-
-      const { amount, event_tag = 'General', note = '' } = await readJsonBody(req);
-      const parsedAmount = Math.round(Number(amount) * 100) / 100;
-
-      if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
-        return sendJson(res, 400, { error: 'Please enter a valid amount greater than 0' });
-      }
-
-      const resolved = resolveEventTag(event_tag);
-      if (!resolved.valid) return sendJson(res, 400, { error: resolved.error });
-
-      const cleanNote = String(note).trim().slice(0, 150);
-
-      const result = db.prepare(`
-        INSERT INTO donations (user_id, amount, event_tag, note, donor_name, is_manual, recorded_by)
-        VALUES (?, ?, ?, ?, '', 0, NULL)
-      `).run(authUser.id, parsedAmount, resolved.value, cleanNote);
-
-      db.syncEventFunds();
-
-      const donationId = result.lastInsertRowid;
-      const donor = db.prepare('SELECT username, email FROM users WHERE id = ?').get(authUser.id);
-
-      let emailStatus = 'not_sent';
-      let emailPreviewUrl = null;
-
-      if (donor && donor.email) {
-        try {
-          const mailResult = await sendDonationAcknowledgement({
-            to: donor.email,
-            username: donor.username,
-            donationId,
-            amount: parsedAmount,
-            eventTag: resolved.value,
-            note: cleanNote,
-            date: new Date().toISOString(),
-          });
-          emailStatus = 'sent';
-          emailPreviewUrl = mailResult.previewUrl;
-        } catch (mailErr) {
-          console.error('Failed to send acknowledgement email:', mailErr.message);
-          emailStatus = 'failed';
-        }
-      }
-
-      const emailNote =
-        emailStatus === 'sent'
-          ? ` Acknowledgement letter emailed to ${donor.email}.`
-          : ' (Donation saved, but acknowledgement email could not be sent — check SMTP settings.)';
-
-      return sendJson(res, 201, {
-        message: `Thank you! Test donation of ₹${parsedAmount} (${resolved.value}) recorded.${emailNote}`,
-        emailPreviewUrl,
-        donation: {
-          id: donationId,
-          username: authUser.username,
-          amount: parsedAmount,
-          event_tag: resolved.value,
-          note: cleanNote,
-          is_manual: 0,
-        },
-      });
-    }
-
-    // 7a. POST /api/admin/donations (Level 1 ONLY: offline entry in someone's name — NO payment, NO email)
-    if (method === 'POST' && pathname === '/api/admin/donations') {
-      const authUser = getAuthUser(req);
-      if (!authUser) return sendJson(res, 401, { error: 'Invalid or missing token' });
-      if (!hasLevel(authUser, 1)) {
-        return sendJson(res, 403, { error: 'Forbidden: Only Level 1 admins can record donations for others' });
-      }
-
-      const {
-        target_user_id,
-        custom_donor_name = '',
-        amount,
-        event_tag = 'General',
-        note = '',
-      } = await readJsonBody(req);
-
-      const parsedAmount = Math.round(Number(amount) * 100) / 100;
-      if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
-        return sendJson(res, 400, { error: 'Please enter a valid amount greater than 0' });
-      }
-
-      const resolved = resolveEventTag(event_tag);
-      if (!resolved.valid) return sendJson(res, 400, { error: resolved.error });
-
-      let linkedUserId = authUser.id;
-      let displayName = '';
-
-      if (target_user_id && target_user_id !== 'custom') {
-        const targetUser = db.prepare('SELECT id, username FROM users WHERE id = ?').get(Number(target_user_id));
-        if (!targetUser) {
-          return sendJson(res, 404, { error: 'Selected user not found' });
-        }
-        linkedUserId = targetUser.id;
-        displayName = targetUser.username;
-      } else {
-        displayName = String(custom_donor_name).trim().slice(0, 80);
-        if (!displayName) {
-          return sendJson(res, 400, { error: 'Select a user or enter a donor name' });
-        }
-      }
-
-      const cleanNote = String(note).trim().slice(0, 150);
-
-      const result = db.prepare(`
-        INSERT INTO donations (user_id, amount, event_tag, note, donor_name, is_manual, recorded_by)
-        VALUES (?, ?, ?, ?, ?, 1, ?)
-      `).run(linkedUserId, parsedAmount, resolved.value, cleanNote, displayName, authUser.id);
-
-      db.syncEventFunds();
-
-      return sendJson(res, 201, {
-        message: `Recorded ₹${parsedAmount} under "${displayName}" (${resolved.value}). Offline entry — no payment required and no email sent.`,
-        donation: {
-          id: result.lastInsertRowid,
-          username: displayName,
-          amount: parsedAmount,
-          event_tag: resolved.value,
-          note: cleanNote,
-          is_manual: 1,
-        },
-      });
-    }
-
-    // 7b. GET /api/funds (PUBLIC — everyone can view event funds and Subtotal)
-    if (method === 'GET' && pathname === '/api/funds') {
-      const subtotal = db.prepare(`
-        SELECT id, title, total_fund
-        FROM events
-        WHERE LOWER(title) = 'subtotal'
-      `).get() || { id: null, title: 'Subtotal', total_fund: 0 };
-
-      const eventFunds = db.prepare(`
-        SELECT id, title, event_date, total_fund
-        FROM events
-        WHERE LOWER(title) != 'subtotal'
-        ORDER BY id DESC
-      `).all();
-
-      const generalRow = db.prepare(`
-        SELECT COALESCE(SUM(amount), 0) AS total
-        FROM donations
-        WHERE LOWER(event_tag) = 'general'
-      `).get();
-
-      return sendJson(res, 200, {
-        subtotal,
-        general_fund: generalRow.total,
-        events: eventFunds,
-      });
-    }
-
-    // 8. GET /api/events (All logged-in users — Subtotal returned separately)
-    if (method === 'GET' && pathname === '/api/events') {
-      const authUser = getAuthUser(req);
-      if (!authUser) return sendJson(res, 401, { error: 'Invalid or missing token' });
-
-      const subtotal = db.prepare(`
-        SELECT id, title, total_fund
-        FROM events
-        WHERE LOWER(title) = 'subtotal'
-      `).get() || { id: null, title: 'Subtotal', total_fund: 0 };
-
-      const generalRow = db.prepare(`
-        SELECT COALESCE(SUM(amount), 0) AS total
-        FROM donations
-        WHERE LOWER(event_tag) = 'general'
-      `).get();
-
-      const rows = db.prepare(`
-        SELECT e.id, e.title, e.event_date, e.content_json, e.total_fund, e.created_at, u.username AS author
-        FROM events e
-        JOIN users u ON e.created_by = u.id
-        WHERE LOWER(e.title) != 'subtotal'
-        ORDER BY e.id DESC
-      `).all();
-
-      const events = rows.map((row) => ({
-        id: row.id,
-        title: row.title,
-        event_date: row.event_date,
-        total_fund: row.total_fund,
-        author: row.author,
-        created_at: row.created_at,
-        blocks: JSON.parse(row.content_json),
-      }));
-
-      return sendJson(res, 200, {
-        count: events.length,
-        subtotal,
-        general_fund: generalRow.total,
-        events,
-      });
-    }
-
-    // 9. POST /api/events (Level 1 Admin ONLY — blocks creating "Subtotal")
-    if (method === 'POST' && pathname === '/api/events') {
-      const authUser = getAuthUser(req);
-      if (!authUser) return sendJson(res, 401, { error: 'Invalid or missing token' });
-      if (!hasLevel(authUser, 1)) {
-        return sendJson(res, 403, { error: 'Forbidden: Only Level 1 admins can upload events' });
-      }
-
-      const { title, event_date = '', blocks } = await readJsonBody(req);
-      const cleanTitle = String(title || '').trim();
-
-      if (!cleanTitle) {
-        return sendJson(res, 400, { error: 'Event title is required' });
-      }
-
-      if (cleanTitle.toLowerCase() === 'subtotal') {
-        return sendJson(res, 400, { error: '"Subtotal" is a reserved system event and cannot be created' });
-      }
-
-      if (!Array.isArray(blocks) || blocks.length === 0) {
-        return sendJson(res, 400, { error: 'Add at least one heading, text, or picture block' });
-      }
-
-      const savedBlocks = [];
-      try {
-        for (const block of blocks) {
-          if (block.type === 'heading' && String(block.content || '').trim()) {
-            savedBlocks.push({ type: 'heading', content: String(block.content).trim() });
-          } else if (block.type === 'text' && String(block.content || '').trim()) {
-            savedBlocks.push({ type: 'text', content: String(block.content).trim() });
-          } else if (block.type === 'image' && block.dataUrl) {
-            const imageUrl = saveBase64Image(block.dataUrl);
-            savedBlocks.push({
-              type: 'image',
-              url: imageUrl,
-              caption: String(block.caption || '').trim().slice(0, 200),
-            });
-          }
-        }
-      } catch (imgErr) {
-        if (imgErr.message === 'INVALID_IMAGE') {
-          return sendJson(res, 400, { error: 'Invalid image format (use PNG, JPG, GIF, or WEBP)' });
-        }
-        throw imgErr;
-      }
-
-      if (savedBlocks.length === 0) {
-        return sendJson(res, 400, { error: 'Article cannot be empty' });
-      }
-
-      const result = db.prepare(`
-        INSERT INTO events (title, event_date, content_json, total_fund, created_by)
-        VALUES (?, ?, ?, 0, ?)
-      `).run(cleanTitle, String(event_date).trim(), JSON.stringify(savedBlocks), authUser.id);
-
-      db.syncEventFunds();
-
-      return sendJson(res, 201, {
-        message: 'Event article published!',
-        id: result.lastInsertRowid,
-      });
-    }
-
-    // 10. DELETE /api/events/:id (Level 1 Admin ONLY — blocks deleting "Subtotal")
-    const deleteEventMatch = pathname.match(/^\/api\/events\/(\d+)$/);
-    if (method === 'DELETE' && deleteEventMatch) {
-      const authUser = getAuthUser(req);
-      if (!authUser) return sendJson(res, 401, { error: 'Invalid or missing token' });
-      if (!hasLevel(authUser, 1)) {
-        return sendJson(res, 403, { error: 'Forbidden: Only Level 1 admins can delete events' });
-      }
-
-      const id = Number(deleteEventMatch[1]);
-      const existing = db.prepare('SELECT title, content_json FROM events WHERE id = ?').get(id);
-      if (!existing) return sendJson(res, 404, { error: 'Event not found' });
-
-      if (existing.title.toLowerCase() === 'subtotal') {
-        return sendJson(res, 403, { error: 'The "Subtotal" event cannot be deleted' });
-      }
-
-      try {
-        const blocks = JSON.parse(existing.content_json);
-        for (const b of blocks) {
-          if (b.type === 'image' && b.url && b.url.startsWith('/uploads/')) {
-            const filePath = path.join(PUBLIC_DIR, b.url);
-            if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-          }
-        }
-      } catch {}
-
-      db.prepare('DELETE FROM events WHERE id = ?').run(id);
-      db.syncEventFunds();
-
-      return sendJson(res, 200, { message: 'Event deleted.' });
-    }
-
-    // 11. GET /api/expenses (Level 1 Admin ONLY)
-    if (method === 'GET' && pathname === '/api/expenses') {
-      const authUser = getAuthUser(req);
-      if (!authUser) return sendJson(res, 401, { error: 'Invalid or missing token' });
-      if (!hasLevel(authUser, 1)) {
-        return sendJson(res, 403, { error: 'Forbidden: Only Level 1 admins can view raw expenses' });
-      }
-
-      const expenses = db.prepare(`
-        SELECT ex.id, ex.amount, ex.event_tag, ex.type_tag, ex.note, ex.created_at, u.username AS recorded_by
-        FROM expenses ex
-        JOIN users u ON ex.created_by = u.id
-        ORDER BY ex.id DESC
-      `).all();
-
-      const total = expenses.reduce((sum, e) => sum + e.amount, 0);
-      return sendJson(res, 200, { total, count: expenses.length, expenses });
-    }
-
-    // 12. POST /api/expenses (Level 1 Admin ONLY)
-    if (method === 'POST' && pathname === '/api/expenses') {
-      const authUser = getAuthUser(req);
-      if (!authUser) return sendJson(res, 401, { error: 'Invalid or missing token' });
-      if (!hasLevel(authUser, 1)) {
-        return sendJson(res, 403, { error: 'Forbidden: Only Level 1 admins can record expenses' });
-      }
-
-      const { amount, event_tag = 'General', type_tag = '', note = '' } = await readJsonBody(req);
-      const parsedAmount = Math.round(Number(amount) * 100) / 100;
-
-      if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
-        return sendJson(res, 400, { error: 'Please enter a valid expense amount greater than 0' });
-      }
-
-      const resolved = resolveEventTag(event_tag);
-      if (!resolved.valid) return sendJson(res, 400, { error: resolved.error });
-
-      const cleanType = String(type_tag).trim().slice(0, 60);
-      if (!cleanType) {
-        return sendJson(res, 400, { error: 'Expense type tag is required' });
-      }
-
-      const cleanNote = String(note).trim().slice(0, 150);
-
-      const result = db.prepare(`
-        INSERT INTO expenses (amount, event_tag, type_tag, note, created_by)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(parsedAmount, resolved.value, cleanType, cleanNote, authUser.id);
-
-      return sendJson(res, 201, {
-        message: `Expense of ₹${parsedAmount} (${cleanType} · ${resolved.value}) recorded.`,
-        expense: {
-          id: result.lastInsertRowid,
-          amount: parsedAmount,
-          event_tag: resolved.value,
-          type_tag: cleanType,
-          note: cleanNote,
-        },
-      });
-    }
-
-    // 13. DELETE /api/expenses/:id (Level 1 Admin ONLY)
-    const deleteExpenseMatch = pathname.match(/^\/api\/expenses\/(\d+)$/);
-    if (method === 'DELETE' && deleteExpenseMatch) {
-      const authUser = getAuthUser(req);
-      if (!authUser) return sendJson(res, 401, { error: 'Invalid or missing token' });
-      if (!hasLevel(authUser, 1)) {
-        return sendJson(res, 403, { error: 'Forbidden: Level 1 required' });
-      }
-
-      const id = Number(deleteExpenseMatch[1]);
-      const info = db.prepare('DELETE FROM expenses WHERE id = ?').run(id);
-      if (info.changes === 0) return sendJson(res, 404, { error: 'Expense not found' });
-
-      return sendJson(res, 200, { message: 'Expense deleted.' });
-    }
-
-    // 14. GET /api/reports (Level 1 Admin & Level 2 Operator)
-    if (method === 'GET' && pathname === '/api/reports') {
-      const authUser = getAuthUser(req);
-      if (!authUser) return sendJson(res, 401, { error: 'Invalid or missing token' });
-      if (!hasLevel(authUser, 1, 2)) {
-        return sendJson(res, 403, { error: 'Forbidden: insufficient access level' });
-      }
-
-      const rows = db.prepare(`
-        SELECT r.id, r.report_type, r.title, r.period_label, r.summary_json, r.created_at, u.username AS generated_by
-        FROM reports r
-        JOIN users u ON r.generated_by = u.id
-        ORDER BY r.id DESC
-      `).all();
-
-      const reports = rows.map((r) => ({
-        id: r.id,
-        report_type: r.report_type,
-        title: r.title,
-        period_label: r.period_label,
-        generated_by: r.generated_by,
-        created_at: r.created_at,
-        summary: JSON.parse(r.summary_json),
-      }));
-
-      return sendJson(res, 200, { count: reports.length, reports });
-    }
-
-    // 15. POST /api/reports/generate (Level 1 Admin ONLY)
-    if (method === 'POST' && pathname === '/api/reports/generate') {
-      const authUser = getAuthUser(req);
-      if (!authUser) return sendJson(res, 401, { error: 'Invalid or missing token' });
-      if (!hasLevel(authUser, 1)) {
-        return sendJson(res, 403, { error: 'Forbidden: Only Level 1 admins can generate reports' });
-      }
-
-      const body = await readJsonBody(req);
-      const spec = buildReportQuery(body);
-      if (spec.error) {
-        return sendJson(res, 400, { error: spec.error });
-      }
-
-      const donationTotals = db.prepare(`
-        SELECT COUNT(*) AS count,
-               COALESCE(SUM(amount), 0) AS total,
-               COALESCE(SUM(CASE WHEN is_manual = 1 THEN amount ELSE 0 END), 0) AS manual_total
-        FROM donations
-        WHERE ${spec.whereSql}
-      `).get(...spec.whereArgs);
-
-      const donationsByCategory = db.prepare(`
-        SELECT event_tag AS category, COUNT(*) AS count, COALESCE(SUM(amount), 0) AS total
-        FROM donations
-        WHERE ${spec.whereSql}
-        GROUP BY event_tag
-        ORDER BY total DESC
-      `).all(...spec.whereArgs);
-
-      // Fetch all matching expenses so each category includes both its total AND individual expenses
-      const expenseWhereAliased = spec.whereSql
-        .replace(/\bcreated_at\b/g, 'ex.created_at')
-        .replace(/\bevent_tag\b/g, 'ex.event_tag');
-
-      const matchingExpenses = db.prepare(`
-        SELECT ex.id, ex.amount, ex.event_tag, ex.type_tag, ex.note, ex.created_at, u.username AS recorded_by
-        FROM expenses ex
-        JOIN users u ON ex.created_by = u.id
-        WHERE ${expenseWhereAliased}
-        ORDER BY ex.id DESC
-      `).all(...spec.whereArgs);
-
-      const totalExpenses = Math.round(
-        matchingExpenses.reduce((sum, e) => sum + e.amount, 0) * 100
-      ) / 100;
-
-      const expensesByType = groupExpensesBy(matchingExpenses, 'type_tag');
-      const expensesByEvent = groupExpensesBy(matchingExpenses, 'event_tag');
-
-      const summary = {
-        total_donations: donationTotals.total,
-        donation_count: donationTotals.count,
-        manual_donations_total: donationTotals.manual_total,
-        total_expenses: totalExpenses,
-        expense_count: matchingExpenses.length,
-        net_balance: Math.round((donationTotals.total - totalExpenses) * 100) / 100,
-        donations_by_category: donationsByCategory,
-        expenses_by_type: expensesByType,
-        expenses_by_event: expensesByEvent,
-      };
-
-      const result = db.prepare(`
-        INSERT INTO reports (report_type, title, period_label, summary_json, generated_by)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(body.report_type, spec.title, spec.periodLabel, JSON.stringify(summary), authUser.id);
-
-      return sendJson(res, 201, {
-        message: `${spec.title} generated! View it on the Reports page.`,
-        report_id: result.lastInsertRowid,
-        title: spec.title,
-        summary,
-      });
-    }
-
-    // 16. DELETE /api/reports/:id (Level 1 Admin ONLY)
-    const deleteReportMatch = pathname.match(/^\/api\/reports\/(\d+)$/);
-    if (method === 'DELETE' && deleteReportMatch) {
-      const authUser = getAuthUser(req);
-      if (!authUser) return sendJson(res, 401, { error: 'Invalid or missing token' });
-      if (!hasLevel(authUser, 1)) {
-        return sendJson(res, 403, { error: 'Forbidden: Level 1 required' });
-      }
-
-      const id = Number(deleteReportMatch[1]);
-      const info = db.prepare('DELETE FROM reports WHERE id = ?').run(id);
-      if (info.changes === 0) return sendJson(res, 404, { error: 'Report not found' });
-
-      return sendJson(res, 200, { message: 'Report deleted.' });
-    }
-
-    // Unknown API route (MUST stay below all /api/... routes)
-    if (pathname.startsWith('/api/')) {
-      return sendJson(res, 404, { error: 'API endpoint not found' });
-    }
-
-    // Static files
-    if (method === 'GET') {
-      return serveStatic(res, pathname);
-    }
-
-    res.writeHead(405, { 'Content-Type': 'text/plain' });
-    res.end('Method Not Allowed');
+      db.prepare('DELETE FROM custom_columns WHERE id = ?').run(registered.id);
+    });
+
+    dropColumn();
+    res.json({
+      message: `Column "${registered.display_label}" removed from ${table}.`,
+    });
   } catch (err) {
-    if (err.message === 'INVALID_JSON') {
-      return sendJson(res, 400, { error: 'Invalid JSON body' });
-    }
-    if (err.message === 'PAYLOAD_TOO_LARGE') {
-      return sendJson(res, 413, { error: 'Request body too large' });
-    }
-    console.error(err);
-    sendJson(res, 500, { error: 'Internal server error' });
+    console.error('Failed to drop column:', err);
+    res.status(500).json({ error: 'Could not remove column from database.' });
   }
 });
 
+// ==========================================
+// AUTH ROUTES (Login by Unique User ID Number)
+// ==========================================
+
+app.post('/api/login', (req, res) => {
+  const { login_id, password } = req.body || {};
+  const parsedLoginId = Number(login_id);
+
+  if (!Number.isInteger(parsedLoginId) || !password) {
+    return res.status(400).json({ error: 'Unique User ID number and password are required' });
+  }
+
+  const user = db.prepare('SELECT * FROM users WHERE login_id = ?').get(parsedLoginId);
+  if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+    return res.status(401).json({ error: 'Invalid User ID number or password' });
+  }
+
+  if (user.status !== 'approved') {
+    return res.status(403).json({
+      error: `Account (ID ${user.login_id}) is currently '${user.status}' and requires admin approval`,
+    });
+  }
+
+  const token = jwt.sign(
+    {
+      id: user.id,
+      login_id: user.login_id,
+      username: user.username,
+      access_level: user.access_level,
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: '2h' }
+  );
+
+  res.json({
+    token,
+    access_level: user.access_level,
+    login_id: user.login_id,
+    username: user.username,
+  });
+});
+
+app.post('/api/signup', (req, res) => {
+  const body = req.body || {};
+  const username = String(body.username || '').trim();
+  const email = String(body.email || '').trim();
+  const password = String(body.password || '');
+  const accessLevel = Number(body.access_level ?? 2);
+
+  if (!username || !email || !password) {
+    return res.status(400).json({ error: 'Username, email, and password are all mandatory' });
+  }
+
+  if (![1, 2].includes(accessLevel)) {
+    return res.status(400).json({ error: 'Public signup access_level must be 1 or 2' });
+  }
+
+  const customCols = db.getCustomColumns('users');
+  const customFieldsInput = body.custom_fields || {};
+  const colNames = ['login_id', 'username', 'email', 'password_hash', 'access_level', 'status', 'created_by', 'approved_by'];
+  const loginId = db.getNextLoginId();
+  const values = [loginId, username, email, bcrypt.hashSync(password, 10), accessLevel, 'pending', null, null];
+
+  for (const col of customCols) {
+    const rawVal = customFieldsInput[col.column_name] ?? body[col.column_name];
+    const check = validateCustomValue(col, rawVal, true);
+    if (check.error) return res.status(400).json({ error: check.error });
+    colNames.push(`"${col.column_name}"`);
+    values.push(check.value);
+  }
+
+  try {
+    const placeholders = values.map(() => '?').join(', ');
+    const result = db.prepare(`
+      INSERT INTO users (${colNames.join(', ')})
+      VALUES (${placeholders})
+    `).run(...values);
+
+    res.status(201).json({
+      message: `Account submitted! Your Unique Login ID Number is ${loginId}. Save it to sign in once approved.`,
+      login_id: loginId,
+      user: {
+        id: result.lastInsertRowid,
+        login_id: loginId,
+        username,
+        email,
+        access_level: accessLevel,
+        status: 'pending',
+      },
+    });
+  } catch (err) {
+    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return res.status(409).json({ error: 'Username or email already exists' });
+    }
+    console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// ==========================================
+// USER MANAGEMENT ROUTES (Level 0 & 1 — NO PASSWORD ACCESS)
+// ==========================================
+
+app.get('/api/users', requireAuth, requireLevel(0, 1), (req, res) => {
+  const safeCols = db.getSafeTableColumns('users');
+  const selectSql = safeCols.map((c) => `u."${c}"`).join(', ');
+  const customCols = db.getCustomColumns('users');
+
+  const users = db.prepare(`
+    SELECT ${selectSql}, h.house_name
+    FROM users u
+    LEFT JOIN houses h ON u.house_id = h.id
+    ORDER BY u.id ASC
+  `).all();
+
+  for (const u of users) {
+    for (const c of customCols) {
+      if (u[c.column_name] === undefined) {
+        u[c.column_name] = c.data_type === 'number' ? null : '';
+      }
+    }
+  }
+
+  res.json({ count: users.length, custom_columns: customCols, users });
+});
+
+app.post('/api/users', requireAuth, requireLevel(0, 1), (req, res) => {
+  const body = req.body || {};
+  const username = String(body.username || '').trim();
+  const email = String(body.email || '').trim();
+  const password = String(body.password || '');
+  const accessLevel = Number(body.access_level ?? 2);
+  const houseId = body.house_id ? Number(body.house_id) : null;
+
+  if (!username || !email || !password) {
+    return res.status(400).json({ error: 'username, email, and password are required' });
+  }
+
+  if (![0, 1, 2].includes(accessLevel)) {
+    return res.status(400).json({ error: 'access_level must be 0, 1, or 2' });
+  }
+
+  if (accessLevel === 0 && req.user.access_level !== 0) {
+    return res.status(403).json({ error: 'Only Level 0 can create another Level 0 account' });
+  }
+
+  if (houseId !== null && !db.prepare('SELECT id FROM houses WHERE id = ?').get(houseId)) {
+    return res.status(400).json({ error: 'Selected house does not exist' });
+  }
+
+  const customCols = db.getCustomColumns('users');
+  const customFieldsInput = body.custom_fields || {};
+  const loginId = db.getNextLoginId();
+
+  const colNames = ['login_id', 'username', 'email', 'password_hash', 'access_level', 'status', 'house_id', 'created_by', 'approved_by'];
+  const values = [loginId, username, email, bcrypt.hashSync(password, 10), accessLevel, 'approved', houseId, req.user.id, req.user.id];
+
+  for (const col of customCols) {
+    const rawVal = customFieldsInput[col.column_name] ?? body[col.column_name];
+    const check = validateCustomValue(col, rawVal, false);
+    if (check.error) return res.status(400).json({ error: check.error });
+    colNames.push(`"${col.column_name}"`);
+    values.push(check.value);
+  }
+
+  try {
+    const placeholders = values.map(() => '?').join(', ');
+    const result = db.prepare(`
+      INSERT INTO users (${colNames.join(', ')})
+      VALUES (${placeholders})
+    `).run(...values);
+
+    res.status(201).json({
+      message: `Account created! Unique Login ID: ${loginId}`,
+      login_id: loginId,
+      user: {
+        id: result.lastInsertRowid,
+        login_id: loginId,
+        username,
+        email,
+        access_level: accessLevel,
+        status: 'approved',
+        house_id: houseId,
+      },
+    });
+  } catch (err) {
+    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return res.status(409).json({ error: 'Username or email already exists' });
+    }
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+app.put('/api/users/:id', requireAuth, requireLevel(0, 1), (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid user ID' });
+
+  const existing = db.prepare('SELECT id, access_level, username FROM users WHERE id = ?').get(id);
+  if (!existing) return res.status(404).json({ error: 'User not found' });
+
+  if (existing.access_level === 0 && req.user.access_level !== 0) {
+    return res.status(403).json({ error: 'Only Level 0 can edit a Level 0 account' });
+  }
+
+  const body = req.body || {};
+  const updates = [];
+  const params = [];
+
+  if (body.username !== undefined) {
+    const clean = String(body.username).trim();
+    if (!clean) return res.status(400).json({ error: 'Username cannot be empty' });
+    updates.push('username = ?');
+    params.push(clean);
+  }
+
+  if (body.email !== undefined) {
+    const clean = String(body.email).trim();
+    if (!clean) return res.status(400).json({ error: 'Email cannot be empty' });
+    updates.push('email = ?');
+    params.push(clean);
+  }
+
+  if (body.access_level !== undefined) {
+    const lvl = Number(body.access_level);
+    if (![0, 1, 2].includes(lvl)) {
+      return res.status(400).json({ error: 'access_level must be 0, 1, or 2' });
+    }
+    if (lvl === 0 && req.user.access_level !== 0) {
+      return res.status(403).json({ error: 'Only Level 0 can assign Level 0 access' });
+    }
+    updates.push('access_level = ?');
+    params.push(lvl);
+  }
+
+  if (body.status !== undefined) {
+    if (!['pending', 'approved', 'rejected'].includes(body.status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+    updates.push('status = ?');
+    params.push(body.status);
+  }
+
+  if (body.house_id !== undefined) {
+    if (body.house_id === null || body.house_id === '') {
+      updates.push('house_id = NULL');
+    } else {
+      const hId = Number(body.house_id);
+      if (!db.prepare('SELECT id FROM houses WHERE id = ?').get(hId)) {
+        return res.status(400).json({ error: 'Selected house does not exist' });
+      }
+      updates.push('house_id = ?');
+      params.push(hId);
+    }
+  }
+
+  const customCols = db.getCustomColumns('users');
+  const customFieldsInput = body.custom_fields || {};
+  for (const col of customCols) {
+    const val = customFieldsInput[col.column_name] !== undefined
+      ? customFieldsInput[col.column_name]
+      : body[col.column_name];
+    if (val !== undefined) {
+      const check = validateCustomValue(col, val, false);
+      if (check.error) return res.status(400).json({ error: check.error });
+      updates.push(`"${col.column_name}" = ?`);
+      params.push(check.value);
+    }
+  }
+
+  if (updates.length === 0) {
+    return res.status(400).json({ error: 'No valid fields provided to update' });
+  }
+
+  try {
+    params.push(id);
+    db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+    res.json({ message: 'User updated (passwords remain protected).' });
+  } catch (err) {
+    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return res.status(409).json({ error: 'Username or email already exists' });
+    }
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+app.delete('/api/users/:id', requireAuth, requireLevel(0, 1), (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid user ID' });
+  if (id === req.user.id) return res.status(400).json({ error: 'You cannot delete your own active account' });
+
+  const target = db.prepare('SELECT id, username, access_level FROM users WHERE id = ?').get(id);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+
+  if (target.access_level === 0 && req.user.access_level !== 0) {
+    return res.status(403).json({ error: 'Only Level 0 can delete a Level 0 account' });
+  }
+
+  const removeUser = db.transaction(() => {
+    db.prepare(`
+      UPDATE donations
+      SET donor_name = CASE WHEN donor_name = '' THEN ? ELSE donor_name END,
+          user_id = ?
+      WHERE user_id = ?
+    `).run(target.username, req.user.id, id);
+
+    db.prepare('UPDATE donations SET recorded_by = ? WHERE recorded_by = ?').run(req.user.id, id);
+    db.prepare('UPDATE events SET created_by = ? WHERE created_by = ?').run(req.user.id, id);
+    db.prepare('UPDATE expenses SET created_by = ? WHERE created_by = ?').run(req.user.id, id);
+    db.prepare('UPDATE reports SET generated_by = ? WHERE generated_by = ?').run(req.user.id, id);
+    db.prepare('UPDATE users SET created_by = NULL WHERE created_by = ?').run(id);
+    db.prepare('UPDATE users SET approved_by = NULL WHERE approved_by = ?').run(id);
+    db.prepare('DELETE FROM users WHERE id = ?').run(id);
+  });
+
+  removeUser();
+  res.json({ message: `User "${target.username}" deleted.` });
+});
+
+app.patch('/api/users/:id/decision', requireAuth, requireLevel(0, 1), (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid user ID' });
+
+  const { decision } = req.body || {};
+  if (!['approved', 'rejected'].includes(decision)) {
+    return res.status(400).json({ error: 'decision must be "approved" or "rejected"' });
+  }
+
+  const targetUser = db.prepare('SELECT id, status FROM users WHERE id = ?').get(id);
+  if (!targetUser) return res.status(404).json({ error: 'User not found' });
+  if (targetUser.status !== 'pending') {
+    return res.status(400).json({ error: `User is already ${targetUser.status}` });
+  }
+
+  db.prepare('UPDATE users SET status = ?, approved_by = ? WHERE id = ?')
+    .run(decision, req.user.id, id);
+
+  res.json({
+    message: `User ${id} has been ${decision}.`,
+    approved_by: req.user.id,
+  });
+});
+
+// ==========================================
+// HOUSES DATABASE ROUTES (Level 0 & 1 — Unique by House Code)
+// ==========================================
+
+app.get('/api/houses/check-code', requireAuth, requireLevel(0, 1), (req, res) => {
+  const cleanCode = String(req.query.code || '').trim();
+  if (!cleanCode) {
+    return res.json({ available: false, error: 'House code is required' });
+  }
+
+  const excludeId = req.query.exclude_id ? Number(req.query.exclude_id) : null;
+  const existing = Number.isInteger(excludeId)
+    ? db.prepare('SELECT id, house_name FROM houses WHERE LOWER(house_number) = LOWER(?) AND id != ?').get(cleanCode, excludeId)
+    : db.prepare('SELECT id, house_name FROM houses WHERE LOWER(house_number) = LOWER(?)').get(cleanCode);
+
+  res.json({
+    available: !existing,
+    code: cleanCode,
+    existing_house: existing ? existing.house_name : null,
+  });
+});
+
+app.get('/api/houses', requireAuth, requireLevel(0, 1), (req, res) => {
+  const customCols = db.getCustomColumns('houses');
+  const houses = db.prepare('SELECT * FROM houses ORDER BY id ASC').all();
+  const allMembers = db.prepare(`
+    SELECT id, login_id, username, email, access_level, house_id
+    FROM users
+    WHERE house_id IS NOT NULL
+    ORDER BY username ASC
+  `).all();
+
+  const membersByHouse = new Map();
+  for (const m of allMembers) {
+    if (!membersByHouse.has(m.house_id)) membersByHouse.set(m.house_id, []);
+    membersByHouse.get(m.house_id).push(m);
+  }
+
+  const enriched = houses.map((h) => {
+    for (const c of customCols) {
+      if (h[c.column_name] === undefined) {
+        h[c.column_name] = c.data_type === 'number' ? null : '';
+      }
+    }
+    const members = membersByHouse.get(h.id) || [];
+    return { ...h, member_count: members.length, members };
+  });
+
+  res.json({ count: enriched.length, custom_columns: customCols, houses: enriched });
+});
+
+app.post('/api/houses', requireAuth, requireLevel(0, 1), (req, res) => {
+  const body = req.body || {};
+  const houseName = String(body.house_name || '').trim();
+  const houseNumber = String(body.house_number || '').trim();
+
+  if (!houseName) {
+    return res.status(400).json({ error: 'House name is required' });
+  }
+
+  if (!houseNumber) {
+    return res.status(400).json({ error: 'House code is required' });
+  }
+
+  const duplicateCode = db
+    .prepare('SELECT id, house_name FROM houses WHERE LOWER(house_number) = LOWER(?)')
+    .get(houseNumber);
+
+  if (duplicateCode) {
+    return res.status(409).json({
+      error: `House code "${houseNumber}" is already taken by "${duplicateCode.house_name}".`,
+    });
+  }
+
+  const customCols = db.getCustomColumns('houses');
+  const customFieldsInput = body.custom_fields || {};
+  const colNames = ['house_name', 'house_number'];
+  const values = [houseName, houseNumber];
+
+  for (const col of customCols) {
+    const rawVal = customFieldsInput[col.column_name] ?? body[col.column_name];
+    const check = validateCustomValue(col, rawVal, false);
+    if (check.error) return res.status(400).json({ error: check.error });
+    colNames.push(`"${col.column_name}"`);
+    values.push(check.value);
+  }
+
+  try {
+    const placeholders = values.map(() => '?').join(', ');
+    const result = db.prepare(`
+      INSERT INTO houses (${colNames.join(', ')})
+      VALUES (${placeholders})
+    `).run(...values);
+
+    res.status(201).json({
+      message: `House "${houseName}" (${houseNumber}) created.`,
+      id: result.lastInsertRowid,
+    });
+  } catch (err) {
+    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return res.status(409).json({ error: `House code "${houseNumber}" is already taken.` });
+    }
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+app.put('/api/houses/:id', requireAuth, requireLevel(0, 1), (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid house ID' });
+
+  const existing = db.prepare('SELECT id FROM houses WHERE id = ?').get(id);
+  if (!existing) return res.status(404).json({ error: 'House not found' });
+
+  const body = req.body || {};
+  const updates = [];
+  const params = [];
+
+  if (body.house_name !== undefined) {
+    const clean = String(body.house_name).trim();
+    if (!clean) return res.status(400).json({ error: 'House name cannot be empty' });
+    updates.push('house_name = ?');
+    params.push(clean);
+  }
+
+  if (body.house_number !== undefined) {
+    const cleanCode = String(body.house_number ?? '').trim();
+    if (!cleanCode) return res.status(400).json({ error: 'House code cannot be empty' });
+
+    const duplicateCode = db
+      .prepare('SELECT id, house_name FROM houses WHERE LOWER(house_number) = LOWER(?) AND id != ?')
+      .get(cleanCode, id);
+
+    if (duplicateCode) {
+      return res.status(409).json({
+        error: `House code "${cleanCode}" is already taken by "${duplicateCode.house_name}".`,
+      });
+    }
+
+    updates.push('house_number = ?');
+    params.push(cleanCode);
+  }
+
+  const customCols = db.getCustomColumns('houses');
+  const customFieldsInput = body.custom_fields || {};
+  for (const col of customCols) {
+    const val = customFieldsInput[col.column_name] !== undefined
+      ? customFieldsInput[col.column_name]
+      : body[col.column_name];
+    if (val !== undefined) {
+      const check = validateCustomValue(col, val, false);
+      if (check.error) return res.status(400).json({ error: check.error });
+      updates.push(`"${col.column_name}" = ?`);
+      params.push(check.value);
+    }
+  }
+
+  if (updates.length === 0) {
+    return res.status(400).json({ error: 'No fields provided to update' });
+  }
+
+  try {
+    params.push(id);
+    db.prepare(`UPDATE houses SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+    res.json({ message: 'House updated.' });
+  } catch (err) {
+    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return res.status(409).json({ error: 'That house code is already taken.' });
+    }
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+app.delete('/api/houses/:id', requireAuth, requireLevel(0, 1), (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid house ID' });
+
+  db.prepare('UPDATE users SET house_id = NULL WHERE house_id = ?').run(id);
+  const info = db.prepare('DELETE FROM houses WHERE id = ?').run(id);
+  if (info.changes === 0) return res.status(404).json({ error: 'House not found' });
+
+  res.json({ message: 'House deleted and members unassigned.' });
+});
+
+app.patch('/api/houses/assign-member', requireAuth, requireLevel(0, 1), (req, res) => {
+  const { user_id, house_id } = req.body || {};
+  const uId = Number(user_id);
+  if (!Number.isInteger(uId)) return res.status(400).json({ error: 'Valid user_id is required' });
+
+  const user = db.prepare('SELECT id, username FROM users WHERE id = ?').get(uId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  if (house_id === null || house_id === '' || house_id === undefined) {
+    db.prepare('UPDATE users SET house_id = NULL WHERE id = ?').run(uId);
+    return res.json({ message: `${user.username} removed from house.` });
+  }
+
+  const hId = Number(house_id);
+  const house = db.prepare('SELECT id, house_name FROM houses WHERE id = ?').get(hId);
+  if (!house) return res.status(404).json({ error: 'House not found' });
+
+  db.prepare('UPDATE users SET house_id = ? WHERE id = ?').run(hId, uId);
+  res.json({ message: `${user.username} assigned to "${house.house_name}".` });
+});
+
+// ==========================================
+// DONATION, ANALYTICS & FUNDS ROUTES
+// ==========================================
+
+app.get('/api/donations', requireAuth, (req, res) => {
+  const donations = db.prepare(`
+    SELECT d.id,
+           CASE WHEN d.donor_name != '' THEN d.donor_name ELSE u.username END AS username,
+           d.amount, d.event_tag, d.note, d.is_manual, d.created_at
+    FROM donations d
+    JOIN users u ON d.user_id = u.id
+    WHERE d.user_id = ? AND (d.donor_name = '' OR d.donor_name = u.username)
+    ORDER BY d.id DESC
+  `).all(req.user.id);
+
+  const total = donations.reduce((sum, d) => sum + d.amount, 0);
+  res.json({ total, count: donations.length, donations });
+});
+
+app.get('/api/admin/donations', requireAuth, requireLevel(0, 1), (req, res) => {
+  const donations = db.prepare(`
+    SELECT d.id, d.user_id, u.login_id,
+           CASE WHEN d.donor_name != '' THEN d.donor_name ELSE u.username END AS donor_display,
+           h.house_name,
+           d.amount, d.event_tag, d.note, d.is_manual, d.created_at
+    FROM donations d
+    JOIN users u ON d.user_id = u.id
+    LEFT JOIN houses h ON u.house_id = h.id
+    ORDER BY d.id DESC
+  `).all();
+
+  const total = donations.reduce((sum, d) => sum + d.amount, 0);
+  res.json({ total, count: donations.length, donations });
+});
+
+app.get('/api/donations/major', requireAuth, (req, res) => {
+  const donations = db.prepare(`
+    SELECT d.id,
+           CASE WHEN d.donor_name != '' THEN d.donor_name ELSE u.username END AS username,
+           d.amount, d.event_tag, d.note, d.is_manual, d.created_at
+    FROM donations d
+    JOIN users u ON d.user_id = u.id
+    WHERE d.amount > 10000
+    ORDER BY d.id DESC
+  `).all();
+
+  const total = donations.reduce((sum, d) => sum + d.amount, 0);
+  res.json({ total, count: donations.length, donations });
+});
+
+app.get('/api/donations/by-person', requireAuth, requireLevel(0, 1), (req, res) => {
+  const users = db.prepare(`
+    SELECT u.id, u.login_id, u.username, u.email, u.house_id, h.house_name
+    FROM users u
+    LEFT JOIN houses h ON u.house_id = h.id
+    ORDER BY u.id ASC
+  `).all();
+
+  const allDonations = db.prepare(`
+    SELECT d.id, d.user_id, d.amount, d.event_tag, d.note, d.donor_name, d.is_manual, d.created_at, u.username
+    FROM donations d
+    JOIN users u ON d.user_id = u.id
+    ORDER BY d.id DESC
+  `).all();
+
+  const peopleMap = new Map();
+  for (const u of users) {
+    peopleMap.set(`user:${u.id}`, {
+      key: `user:${u.id}`,
+      user_id: u.id,
+      login_id: u.login_id,
+      name: u.username,
+      email: u.email,
+      house_name: u.house_name || 'Unassigned',
+      is_registered: true,
+      donation_count: 0,
+      total_donated: 0,
+      donations: [],
+    });
+  }
+
+  for (const d of allDonations) {
+    const isCustomGuest = d.donor_name && d.donor_name !== d.username;
+    const key = isCustomGuest ? `guest:${d.donor_name}` : `user:${d.user_id}`;
+
+    if (!peopleMap.has(key)) {
+      peopleMap.set(key, {
+        key,
+        user_id: null,
+        login_id: null,
+        name: d.donor_name,
+        email: '',
+        house_name: 'Unassigned (Offline Donor)',
+        is_registered: false,
+        donation_count: 0,
+        total_donated: 0,
+        donations: [],
+      });
+    }
+
+    const person = peopleMap.get(key);
+    person.donation_count += 1;
+    person.total_donated = Math.round((person.total_donated + d.amount) * 100) / 100;
+    person.donations.push({
+      id: d.id,
+      amount: d.amount,
+      event_tag: d.event_tag,
+      note: d.note,
+      is_manual: d.is_manual,
+      created_at: d.created_at,
+    });
+  }
+
+  const people = Array.from(peopleMap.values()).sort((a, b) => b.total_donated - a.total_donated);
+  res.json({ count: people.length, people });
+});
+
+app.get('/api/donations/by-house', requireAuth, requireLevel(0, 1), (req, res) => {
+  const houses = db.prepare('SELECT * FROM houses ORDER BY house_name ASC').all();
+  const users = db.prepare('SELECT id, login_id, username, house_id FROM users ORDER BY username ASC').all();
+  const allDonations = db.prepare(`
+    SELECT d.id, d.user_id, d.amount, d.event_tag, d.note, d.donor_name, d.is_manual, d.created_at, u.username, u.login_id, u.house_id
+    FROM donations d
+    JOIN users u ON d.user_id = u.id
+    ORDER BY d.id DESC
+  `).all();
+
+  const houseMap = new Map();
+  for (const h of houses) {
+    houseMap.set(h.id, {
+      house_id: h.id,
+      house_name: h.house_name,
+      house_number: h.house_number || '',
+      members: [],
+      donation_count: 0,
+      total_donated: 0,
+      donations: [],
+    });
+  }
+
+  const unassigned = {
+    house_id: null,
+    house_name: 'Unassigned / External Donors',
+    house_number: '',
+    members: [],
+    donation_count: 0,
+    total_donated: 0,
+    donations: [],
+  };
+
+  for (const u of users) {
+    if (u.house_id && houseMap.has(u.house_id)) {
+      houseMap.get(u.house_id).members.push({ id: u.id, login_id: u.login_id, username: u.username });
+    }
+  }
+
+  for (const d of allDonations) {
+    const isCustomGuest = d.donor_name && d.donor_name !== d.username;
+    const targetBucket =
+      !isCustomGuest && d.house_id && houseMap.has(d.house_id)
+        ? houseMap.get(d.house_id)
+        : unassigned;
+
+    targetBucket.donation_count += 1;
+    targetBucket.total_donated = Math.round((targetBucket.total_donated + d.amount) * 100) / 100;
+    targetBucket.donations.push({
+      id: d.id,
+      donor: isCustomGuest ? d.donor_name : d.username,
+      login_id: isCustomGuest ? null : d.login_id,
+      amount: d.amount,
+      event_tag: d.event_tag,
+      note: d.note,
+      is_manual: d.is_manual,
+      created_at: d.created_at,
+    });
+  }
+
+  const result = Array.from(houseMap.values()).sort((a, b) => b.total_donated - a.total_donated);
+  if (unassigned.donation_count > 0) {
+    result.push(unassigned);
+  }
+
+  res.json({ count: result.length, houses: result });
+});
+
+// Standard user donation -> blocks expired events, sends email (Resend) & SMS
+app.post('/api/donations', requireAuth, async (req, res, next) => {
+  try {
+    const { amount, event_tag = 'General', note = '' } = req.body || {};
+    const parsedAmount = Math.round(Number(amount) * 100) / 100;
+
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+      return res.status(400).json({ error: 'Please enter a valid amount greater than 0' });
+    }
+
+    const resolved = resolveEventTag(event_tag, { blockExpired: true });
+    if (!resolved.valid) return res.status(400).json({ error: resolved.error });
+
+    const cleanNote = String(note).trim().slice(0, 150);
+
+    const result = db.prepare(`
+      INSERT INTO donations (user_id, amount, event_tag, note, donor_name, is_manual, recorded_by)
+      VALUES (?, ?, ?, ?, '', 0, NULL)
+    `).run(req.user.id, parsedAmount, resolved.value, cleanNote);
+
+    db.syncEventFunds();
+
+    const donationId = result.lastInsertRowid;
+    const phoneCol = getUserPhoneColumn();
+    const selectCols = phoneCol
+      ? `username, email, "${phoneCol}" AS phone_number`
+      : `username, email, '' AS phone_number`;
+
+    const donor = db.prepare(`SELECT ${selectCols} FROM users WHERE id = ?`).get(req.user.id);
+
+    let emailPreviewUrl = null;
+    const notices = [];
+
+    if (donor) {
+      const ack = await sendDonationAcknowledgement({
+        to: donor.email,
+        phone: donor.phone_number,
+        username: donor.username,
+        donationId,
+        amount: parsedAmount,
+        eventTag: resolved.value,
+        note: cleanNote,
+        date: new Date().toISOString(),
+      });
+
+      emailPreviewUrl = ack.email.previewUrl;
+
+      if (ack.email.status === 'sent') {
+        notices.push(
+          ack.email.testMode
+            ? `Email logged in test mode for ${donor.email}`
+            : `Email sent to ${donor.email}`
+        );
+      } else if (ack.email.status === 'failed') {
+        notices.push('Email failed (check Resend settings)');
+      }
+
+      if (ack.sms.status === 'sent') {
+        notices.push(
+          ack.sms.testMode
+            ? `SMS logged in test mode for ${ack.sms.to}`
+            : `SMS sent to ${ack.sms.to}`
+        );
+      } else if (ack.sms.status === 'failed') {
+        notices.push('SMS failed (check SMS settings)');
+      }
+    }
+
+    const statusSuffix = notices.length ? ` (${notices.join(' · ')}.)` : '';
+
+    res.status(201).json({
+      message: `Thank you! Test donation of ₹${parsedAmount} (${resolved.value}) recorded.${statusSuffix}`,
+      emailPreviewUrl,
+      donation: {
+        id: donationId,
+        username: req.user.username,
+        amount: parsedAmount,
+        event_tag: resolved.value,
+        note: cleanNote,
+        is_manual: 0,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Admin proxy donation (in someone's name) -> stays open for ended events, NO payment, NO email/SMS
+app.post('/api/admin/donations', requireAuth, requireLevel(0, 1), (req, res) => {
+  const {
+    target_user_id,
+    custom_donor_name = '',
+    amount,
+    event_tag = 'General',
+    note = '',
+  } = req.body || {};
+
+  const parsedAmount = Math.round(Number(amount) * 100) / 100;
+  if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+    return res.status(400).json({ error: 'Please enter a valid amount greater than 0' });
+  }
+
+  const resolved = resolveEventTag(event_tag);
+  if (!resolved.valid) return res.status(400).json({ error: resolved.error });
+
+  let linkedUserId = req.user.id;
+  let displayName = '';
+
+  if (target_user_id && target_user_id !== 'custom') {
+    const targetUser = db.prepare('SELECT id, username FROM users WHERE id = ?').get(Number(target_user_id));
+    if (!targetUser) return res.status(404).json({ error: 'Selected user not found' });
+    linkedUserId = targetUser.id;
+    displayName = targetUser.username;
+  } else {
+    displayName = String(custom_donor_name).trim().slice(0, 80);
+    if (!displayName) return res.status(400).json({ error: 'Select a user or enter a donor name' });
+  }
+
+  const cleanNote = String(note).trim().slice(0, 150);
+
+  const result = db.prepare(`
+    INSERT INTO donations (user_id, amount, event_tag, note, donor_name, is_manual, recorded_by)
+    VALUES (?, ?, ?, ?, ?, 1, ?)
+  `).run(linkedUserId, parsedAmount, resolved.value, cleanNote, displayName, req.user.id);
+
+  db.syncEventFunds();
+
+  res.status(201).json({
+    message: `Recorded ₹${parsedAmount} under "${displayName}" (${resolved.value}). Offline entry — no payment required and no email sent.`,
+    donation: {
+      id: result.lastInsertRowid,
+      username: displayName,
+      amount: parsedAmount,
+      event_tag: resolved.value,
+      note: cleanNote,
+      is_manual: 1,
+    },
+  });
+});
+
+app.put('/api/donations/:id', requireAuth, requireLevel(0, 1), (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid donation ID' });
+
+  const existing = db.prepare('SELECT * FROM donations WHERE id = ?').get(id);
+  if (!existing) return res.status(404).json({ error: 'Donation not found' });
+
+  const { amount, event_tag, note, donor_name } = req.body || {};
+  const parsedAmount = amount !== undefined ? Math.round(Number(amount) * 100) / 100 : existing.amount;
+  if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+    return res.status(400).json({ error: 'Amount must be greater than 0' });
+  }
+
+  const resolved = event_tag !== undefined ? resolveEventTag(event_tag) : { valid: true, value: existing.event_tag };
+  if (!resolved.valid) return res.status(400).json({ error: resolved.error });
+
+  const cleanNote = note !== undefined ? String(note).trim().slice(0, 150) : existing.note;
+  const cleanDonor = donor_name !== undefined ? String(donor_name).trim().slice(0, 80) : existing.donor_name;
+
+  db.prepare(`
+    UPDATE donations SET amount = ?, event_tag = ?, note = ?, donor_name = ? WHERE id = ?
+  `).run(parsedAmount, resolved.value, cleanNote, cleanDonor, id);
+
+  db.syncEventFunds();
+  res.json({ message: 'Donation updated.' });
+});
+
+app.delete('/api/donations/:id', requireAuth, requireLevel(0, 1), (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid donation ID' });
+
+  const info = db.prepare('DELETE FROM donations WHERE id = ?').run(id);
+  if (info.changes === 0) return res.status(404).json({ error: 'Donation not found' });
+
+  db.syncEventFunds();
+  res.json({ message: 'Donation deleted and event funds re-synced.' });
+});
+
+app.get('/api/funds', (req, res) => {
+  const subtotal = db.prepare(`
+    SELECT id, title, total_fund FROM events WHERE LOWER(title) = 'subtotal'
+  `).get() || { id: null, title: 'Subtotal', total_fund: 0 };
+
+  const eventFunds = db.prepare(`
+    SELECT id, title, event_date, total_fund
+    FROM events
+    WHERE LOWER(title) != 'subtotal'
+    ORDER BY id DESC
+  `).all();
+
+  const generalRow = db.prepare(`
+    SELECT COALESCE(SUM(amount), 0) AS total
+    FROM donations
+    WHERE LOWER(event_tag) = 'general'
+  `).get();
+
+  res.json({
+    subtotal,
+    general_fund: generalRow.total,
+    events: eventFunds,
+  });
+});
+
+// ==========================================
+// EVENT ROUTES
+// ==========================================
+
+app.get('/api/events', requireAuth, (req, res) => {
+  const subtotal = db.prepare(`
+    SELECT id, title, total_fund FROM events WHERE LOWER(title) = 'subtotal'
+  `).get() || { id: null, title: 'Subtotal', total_fund: 0 };
+
+  const generalRow = db.prepare(`
+    SELECT COALESCE(SUM(amount), 0) AS total
+    FROM donations
+    WHERE LOWER(event_tag) = 'general'
+  `).get();
+
+  const rows = db.prepare(`
+    SELECT e.id, e.title, e.event_date, e.content_json, e.total_fund, e.created_at, u.username AS author
+    FROM events e
+    JOIN users u ON e.created_by = u.id
+    WHERE LOWER(e.title) != 'subtotal'
+    ORDER BY e.id DESC
+  `).all();
+
+  const events = rows.map((row) => ({
+    id: row.id,
+    title: row.title,
+    event_date: row.event_date,
+    is_expired: isEventExpired(row.event_date),
+    total_fund: row.total_fund,
+    author: row.author,
+    created_at: row.created_at,
+    blocks: JSON.parse(row.content_json),
+  }));
+
+  res.json({ count: events.length, subtotal, general_fund: generalRow.total, events });
+});
+
+app.post('/api/events', requireAuth, requireLevel(0, 1), (req, res, next) => {
+  const { title, event_date = '', blocks } = req.body || {};
+  const cleanTitle = String(title || '').trim();
+
+  if (!cleanTitle) return res.status(400).json({ error: 'Event title is required' });
+  if (cleanTitle.toLowerCase() === 'subtotal') {
+    return res.status(400).json({ error: '"Subtotal" is a reserved system event and cannot be created' });
+  }
+  if (!Array.isArray(blocks) || blocks.length === 0) {
+    return res.status(400).json({ error: 'Add at least one heading, text, or picture block' });
+  }
+
+  const savedBlocks = [];
+  try {
+    for (const block of blocks) {
+      if (block.type === 'heading' && String(block.content || '').trim()) {
+        savedBlocks.push({ type: 'heading', content: String(block.content).trim() });
+      } else if (block.type === 'text' && String(block.content || '').trim()) {
+        savedBlocks.push({ type: 'text', content: String(block.content).trim() });
+      } else if (block.type === 'image' && block.dataUrl) {
+        const imageUrl = saveBase64Image(block.dataUrl);
+        savedBlocks.push({
+          type: 'image',
+          url: imageUrl,
+          caption: String(block.caption || '').trim().slice(0, 200),
+        });
+      }
+    }
+  } catch (imgErr) {
+    if (imgErr.message === 'INVALID_IMAGE') {
+      return res.status(400).json({ error: 'Invalid image format (use PNG, JPG, GIF, or WEBP)' });
+    }
+    return next(imgErr);
+  }
+
+  if (savedBlocks.length === 0) return res.status(400).json({ error: 'Article cannot be empty' });
+
+  const result = db.prepare(`
+    INSERT INTO events (title, event_date, content_json, total_fund, created_by)
+    VALUES (?, ?, ?, 0, ?)
+  `).run(cleanTitle, String(event_date).trim(), JSON.stringify(savedBlocks), req.user.id);
+
+  db.syncEventFunds();
+  res.status(201).json({ message: 'Event article published!', id: result.lastInsertRowid });
+});
+
+app.put('/api/events/:id', requireAuth, requireLevel(0, 1), (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid event ID' });
+
+  const existing = db.prepare('SELECT id, title, event_date FROM events WHERE id = ?').get(id);
+  if (!existing) return res.status(404).json({ error: 'Event not found' });
+  if (existing.title.toLowerCase() === 'subtotal') {
+    return res.status(403).json({ error: 'The "Subtotal" system event cannot be edited' });
+  }
+
+  const newTitle = req.body?.title !== undefined ? String(req.body.title).trim() : existing.title;
+  const newDate = req.body?.event_date !== undefined ? String(req.body.event_date).trim() : existing.event_date;
+
+  if (!newTitle) return res.status(400).json({ error: 'Event title cannot be empty' });
+  if (newTitle.toLowerCase() === 'subtotal') {
+    return res.status(400).json({ error: 'Cannot rename an event to "Subtotal"' });
+  }
+
+  const updateEvent = db.transaction(() => {
+    db.prepare('UPDATE events SET title = ?, event_date = ? WHERE id = ?').run(newTitle, newDate, id);
+    if (newTitle !== existing.title) {
+      db.prepare('UPDATE donations SET event_tag = ? WHERE event_tag = ?').run(newTitle, existing.title);
+      db.prepare('UPDATE expenses SET event_tag = ? WHERE event_tag = ?').run(newTitle, existing.title);
+    }
+  });
+
+  updateEvent();
+  db.syncEventFunds();
+  res.json({ message: 'Event updated.' });
+});
+
+app.delete('/api/events/:id', requireAuth, requireLevel(0, 1), (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid event ID' });
+
+  const existing = db.prepare('SELECT title, content_json FROM events WHERE id = ?').get(id);
+  if (!existing) return res.status(404).json({ error: 'Event not found' });
+  if (existing.title.toLowerCase() === 'subtotal') {
+    return res.status(403).json({ error: 'The "Subtotal" event cannot be deleted' });
+  }
+
+  try {
+    const blocks = JSON.parse(existing.content_json);
+    for (const b of blocks) {
+      if (b.type === 'image' && b.url && b.url.startsWith('/uploads/')) {
+        const filePath = path.join(PUBLIC_DIR, b.url);
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      }
+    }
+  } catch {}
+
+  db.prepare('DELETE FROM events WHERE id = ?').run(id);
+  db.syncEventFunds();
+  res.json({ message: 'Event deleted.' });
+});
+
+// ==========================================
+// EXPENSE ROUTES (Level 0 & 1)
+// ==========================================
+
+app.get('/api/expenses', requireAuth, requireLevel(0, 1), (req, res) => {
+  const expenses = db.prepare(`
+    SELECT ex.id, ex.amount, ex.event_tag, ex.type_tag, ex.note, ex.created_at, u.username AS recorded_by
+    FROM expenses ex
+    JOIN users u ON ex.created_by = u.id
+    ORDER BY ex.id DESC
+  `).all();
+
+  const total = expenses.reduce((sum, e) => sum + e.amount, 0);
+  res.json({ total, count: expenses.length, expenses });
+});
+
+app.post('/api/expenses', requireAuth, requireLevel(0, 1), (req, res) => {
+  const { amount, event_tag = 'General', type_tag = '', note = '' } = req.body || {};
+  const parsedAmount = Math.round(Number(amount) * 100) / 100;
+
+  if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+    return res.status(400).json({ error: 'Please enter a valid expense amount greater than 0' });
+  }
+
+  const resolved = resolveEventTag(event_tag);
+  if (!resolved.valid) return res.status(400).json({ error: resolved.error });
+
+  const cleanType = String(type_tag).trim().slice(0, 60);
+  if (!cleanType) return res.status(400).json({ error: 'Expense type tag is required' });
+
+  const cleanNote = String(note).trim().slice(0, 150);
+
+  const result = db.prepare(`
+    INSERT INTO expenses (amount, event_tag, type_tag, note, created_by)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(parsedAmount, resolved.value, cleanType, cleanNote, req.user.id);
+
+  res.status(201).json({
+    message: `Expense of ₹${parsedAmount} (${cleanType} · ${resolved.value}) recorded.`,
+    expense: {
+      id: result.lastInsertRowid,
+      amount: parsedAmount,
+      event_tag: resolved.value,
+      type_tag: cleanType,
+      note: cleanNote,
+    },
+  });
+});
+
+app.put('/api/expenses/:id', requireAuth, requireLevel(0, 1), (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid expense ID' });
+
+  const existing = db.prepare('SELECT * FROM expenses WHERE id = ?').get(id);
+  if (!existing) return res.status(404).json({ error: 'Expense not found' });
+
+  const { amount, event_tag, type_tag, note } = req.body || {};
+  const parsedAmount = amount !== undefined ? Math.round(Number(amount) * 100) / 100 : existing.amount;
+  if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+    return res.status(400).json({ error: 'Amount must be greater than 0' });
+  }
+
+  const resolved = event_tag !== undefined ? resolveEventTag(event_tag) : { valid: true, value: existing.event_tag };
+  if (!resolved.valid) return res.status(400).json({ error: resolved.error });
+
+  const cleanType = type_tag !== undefined ? String(type_tag).trim().slice(0, 60) : existing.type_tag;
+  if (!cleanType) return res.status(400).json({ error: 'Expense type tag cannot be empty' });
+
+  const cleanNote = note !== undefined ? String(note).trim().slice(0, 150) : existing.note;
+
+  db.prepare(`
+    UPDATE expenses SET amount = ?, event_tag = ?, type_tag = ?, note = ? WHERE id = ?
+  `).run(parsedAmount, resolved.value, cleanType, cleanNote, id);
+
+  res.json({ message: 'Expense updated.' });
+});
+
+app.delete('/api/expenses/:id', requireAuth, requireLevel(0, 1), (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid expense ID' });
+
+  const info = db.prepare('DELETE FROM expenses WHERE id = ?').run(id);
+  if (info.changes === 0) return res.status(404).json({ error: 'Expense not found' });
+
+  res.json({ message: 'Expense deleted.' });
+});
+
+// ==========================================
+// REPORT ROUTES
+// ==========================================
+
+app.get('/api/reports', requireAuth, requireLevel(0, 1, 2), (req, res) => {
+  const rows = db.prepare(`
+    SELECT r.id, r.report_type, r.title, r.period_label, r.summary_json, r.created_at, u.username AS generated_by
+    FROM reports r
+    JOIN users u ON r.generated_by = u.id
+    ORDER BY r.id DESC
+  `).all();
+
+  const reports = rows.map((r) => ({
+    id: r.id,
+    report_type: r.report_type,
+    title: r.title,
+    period_label: r.period_label,
+    generated_by: r.generated_by,
+    created_at: r.created_at,
+    summary: JSON.parse(r.summary_json),
+  }));
+
+  res.json({ count: reports.length, reports });
+});
+
+app.post('/api/reports/generate', requireAuth, requireLevel(0, 1), (req, res) => {
+  const body = req.body || {};
+  const spec = buildReportQuery(body);
+  if (spec.error) return res.status(400).json({ error: spec.error });
+
+  const donationTotals = db.prepare(`
+    SELECT COUNT(*) AS count,
+           COALESCE(SUM(amount), 0) AS total,
+           COALESCE(SUM(CASE WHEN is_manual = 1 THEN amount ELSE 0 END), 0) AS manual_total
+    FROM donations
+    WHERE ${spec.whereSql}
+  `).get(...spec.whereArgs);
+
+  const donationsByCategory = db.prepare(`
+    SELECT event_tag AS category, COUNT(*) AS count, COALESCE(SUM(amount), 0) AS total
+    FROM donations
+    WHERE ${spec.whereSql}
+    GROUP BY event_tag
+    ORDER BY total DESC
+  `).all(...spec.whereArgs);
+
+  const expenseWhereAliased = spec.whereSql
+    .replace(/\bcreated_at\b/g, 'ex.created_at')
+    .replace(/\bevent_tag\b/g, 'ex.event_tag');
+
+  const matchingExpenses = db.prepare(`
+    SELECT ex.id, ex.amount, ex.event_tag, ex.type_tag, ex.note, ex.created_at, u.username AS recorded_by
+    FROM expenses ex
+    JOIN users u ON ex.created_by = u.id
+    WHERE ${expenseWhereAliased}
+    ORDER BY ex.id DESC
+  `).all(...spec.whereArgs);
+
+  const totalExpenses = Math.round(matchingExpenses.reduce((sum, e) => sum + e.amount, 0) * 100) / 100;
+
+  const summary = {
+    total_donations: donationTotals.total,
+    donation_count: donationTotals.count,
+    manual_donations_total: donationTotals.manual_total,
+    total_expenses: totalExpenses,
+    expense_count: matchingExpenses.length,
+    net_balance: Math.round((donationTotals.total - totalExpenses) * 100) / 100,
+    donations_by_category: donationsByCategory,
+    expenses_by_type: groupExpensesBy(matchingExpenses, 'type_tag'),
+    expenses_by_event: groupExpensesBy(matchingExpenses, 'event_tag'),
+  };
+
+  const result = db.prepare(`
+    INSERT INTO reports (report_type, title, period_label, summary_json, generated_by)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(body.report_type, spec.title, spec.periodLabel, JSON.stringify(summary), req.user.id);
+
+  res.status(201).json({
+    message: `${spec.title} generated! View it on the Reports page.`,
+    report_id: result.lastInsertRowid,
+    title: spec.title,
+    summary,
+  });
+});
+
+app.delete('/api/reports/:id', requireAuth, requireLevel(0, 1), (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid report ID' });
+
+  const info = db.prepare('DELETE FROM reports WHERE id = ?').run(id);
+  if (info.changes === 0) return res.status(404).json({ error: 'Report not found' });
+
+  res.json({ message: 'Report deleted.' });
+});
+
+// ==========================================
+// FALLBACKS & ERROR HANDLING
+// ==========================================
+
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: 'API endpoint not found' });
+});
+
+app.use((err, req, res, next) => {
+  if (err.type === 'entity.parse.failed') {
+    return res.status(400).json({ error: 'Invalid JSON body' });
+  }
+  if (err.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'Request body too large' });
+  }
+  console.error(err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Server running without Express on http://localhost:${PORT}`);
+app.listen(PORT, () => {
+  console.log(`Server running with Express on http://localhost:${PORT}`);
 });
