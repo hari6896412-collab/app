@@ -4,7 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Database Control</title>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="/style.css" />
+  <script src="/theme.js"></script>
 </head>
 <body>
   <header></header>
@@ -12,7 +13,7 @@
   <div class="container">
     <!-- LEVEL 0 ONLY: Add or Remove Custom Columns -->
     <div class="section l0-panel" id="l0SchemaSection" style="display: none;">
-      <h2>Level 0: Manage Database Columns</h2>
+      <h2>Super Admin: Manage Database Columns</h2>
       <p class="hint">Columns added to <b>Users</b> become mandatory on Sign Up, while existing records with missing details stay error-free.</p>
       <form id="schemaForm">
         <div class="donate-grid">
@@ -51,10 +52,28 @@
       <div id="existingColsWrap" class="custom-cols-wrap"></div>
     </div>
 
+    <!-- Add an account (any admin, roles below their own) -->
+    <div class="section" style="margin-bottom: 24px;">
+      <h2>Add an Account</h2>
+      <p class="hint">You can create accounts with roles below your own, inside your own area.</p>
+      <form id="addUserForm">
+        <div class="donate-grid">
+          <div><label for="nu_username">Username</label><input id="nu_username" required /></div>
+          <div><label for="nu_email">Email</label><input id="nu_email" type="email" required /></div>
+          <div><label for="nu_password">Password</label><input id="nu_password" type="text" required minlength="4" /></div>
+          <div><label for="nu_level">Role</label><select id="nu_level" onchange="renderScopeSelect('nu')"></select></div>
+          <div id="nu_scopeWrap"><label for="nu_scope">Looks after</label><select id="nu_scope"></select></div>
+          <div><label for="nu_centre">Home centre</label><select id="nu_centre"></select></div>
+          <button type="submit">Create Account</button>
+        </div>
+        <div id="addUserMsg" class="message"></div>
+      </form>
+    </div>
+
     <!-- Database Selector Tabs -->
     <div class="section">
-      <h2>Complete Database Control</h2>
-      <p class="hint">Full view, edit, and delete access across all tables. User passwords are encrypted and permanently hidden.</p>
+      <h2>Database Control</h2>
+      <p class="hint" id="dbScopeHint">View, edit, and delete records in your area. User passwords are encrypted and permanently hidden.</p>
 
       <div class="filter-bar">
         <button type="button" class="filter-btn active" onclick="switchTab('users', this)">Users</button>
@@ -78,13 +97,14 @@
     </div>
   </div>
 
+  <script src="/access.js"></script>
   <script>
     const token = localStorage.getItem('token');
     const accessLevel = Number(localStorage.getItem('access_level'));
 
     if (!token) {
       window.location.href = '/index.html';
-    } else if (accessLevel > 1) {
+    } else if (accessLevel > 3) {
       window.location.href = '/dashboard.html';
     }
 
@@ -92,6 +112,8 @@
       document.getElementById('l0SchemaSection').style.display = 'block';
     }
 
+    const LEVEL_NAMES = window.Access.LEVEL_NAMES;
+    let hier = null;
     let activeTab = 'users';
     let cache = {
       users: [], userCols: [],
@@ -309,6 +331,8 @@
       cache.donations = dData.donations || [];
       cache.events = evData.events || [];
       cache.expenses = exData.expenses || [];
+      hier = await window.Access.hierarchy(true);
+      fillAddUserForm();
 
       renderExistingCustomColumns();
       renderActiveTab();
@@ -324,7 +348,8 @@
             <th>Login ID</th>
             <th>Username</th>
             <th>Email</th>
-            <th>Level</th>
+            <th>Role</th>
+            <th>Centre</th>
             <th>Status</th>
             <th>House</th>
             ${cache.userCols.map((c) => `<th>${escapeHtml(c.display_label)}</th>`).join('')}
@@ -336,13 +361,15 @@
             <td><b>#${u.login_id}</b></td>
             <td>${escapeHtml(u.username)}</td>
             <td>${escapeHtml(u.email)}</td>
-            <td>L${u.access_level}</td>
+            <td>${escapeHtml(u.role_label)}</td>
+            <td>${escapeHtml(u.centre_name || '—')}</td>
             <td><span class="badge ${escapeHtml(u.status)}">${escapeHtml(u.status)}</span></td>
             <td>${escapeHtml(u.house_name || '—')}</td>
             ${cache.userCols.map((c) => `<td>${displayCell(u[c.column_name])}</td>`).join('')}
-            <td>
-              <button class="btn-approve" onclick="openEditUser(${u.id})">Edit</button>
-              <button class="btn-reject" onclick="deleteRow('/api/users/${u.id}', 'Delete user ${escapeHtml(u.username)}?')">Delete</button>
+            <td style="white-space:nowrap;">
+              ${u.can_manage ? `<button class="btn-approve" onclick="openEditUser(${u.id})">Edit</button>
+              <button class="btn-reject" onclick="deleteRow('/api/users/${u.id}', 'Delete user ${escapeHtml(u.username)}?')">Delete</button>`
+              : `<span class="stat-sub">${u.is_self ? 'You' : 'View only'}</span>`}
             </td>
           </tr>
         `).join('');
@@ -352,6 +379,7 @@
             <th>ID</th>
             <th>House Name</th>
             <th>Number</th>
+            <th>Centre</th>
             ${cache.houseCols.map((c) => `<th>${escapeHtml(c.display_label)}</th>`).join('')}
             <th>Members</th>
             <th>Action</th>
@@ -363,6 +391,7 @@
                 <td><b>#${h.id}</b></td>
                 <td>${escapeHtml(h.house_name)}</td>
                 <td>${escapeHtml(h.house_number || '—')}</td>
+                <td>${escapeHtml(h.centre_name || '—')}</td>
                 ${cache.houseCols.map((c) => `<td>${displayCell(h[c.column_name])}</td>`).join('')}
                 <td>${h.member_count}</td>
                 <td>
@@ -371,13 +400,14 @@
                 </td>
               </tr>
             `).join('')
-          : `<tr><td colspan="${5 + cache.houseCols.length}" class="empty-row">No houses yet. Add them on the Houses page.</td></tr>`;
+          : `<tr><td colspan="${6 + cache.houseCols.length}" class="empty-row">No houses yet. Add them on the Houses page.</td></tr>`;
       } else if (activeTab === 'donations') {
         thead.innerHTML = `
           <tr>
             <th>#</th>
             <th>Donor</th>
             <th>House</th>
+            <th>Centre</th>
             <th>Event</th>
             <th>Amount</th>
             <th>Note</th>
@@ -390,6 +420,7 @@
                 <td><b>#${d.id}</b></td>
                 <td>${escapeHtml(d.donor_display)}</td>
                 <td>${escapeHtml(d.house_name || '—')}</td>
+                <td>${escapeHtml(d.centre_name || '—')}</td>
                 <td><span class="event-tag-badge ${d.event_tag === 'General' ? 'general' : ''}">${escapeHtml(d.event_tag)}</span></td>
                 <td class="amount-cell">${formatRupees(d.amount)}${d.is_manual ? '<span class="manual-badge">Admin</span>' : ''}</td>
                 <td>${escapeHtml(d.note || '—')}</td>
@@ -399,23 +430,26 @@
                 </td>
               </tr>
             `).join('')
-          : `<tr><td colspan="7" class="empty-row">No donations recorded.</td></tr>`;
+          : `<tr><td colspan="8" class="empty-row">No donations recorded.</td></tr>`;
       } else if (activeTab === 'events') {
         thead.innerHTML = `
           <tr>
             <th>#</th>
             <th>Title</th>
+            <th>Centre</th>
             <th>Event Date</th>
             <th>Total Fund</th>
             <th>Author</th>
             <th>Action</th>
           </tr>
         `;
-        tbody.innerHTML = cache.events.length
-          ? cache.events.map((ev) => `
+        const myEvents = cache.events.filter((ev) => ev.can_manage);
+        tbody.innerHTML = myEvents.length
+          ? myEvents.map((ev) => `
               <tr>
                 <td><b>#${ev.id}</b></td>
                 <td>${escapeHtml(ev.title)}</td>
+                <td>${escapeHtml(ev.centre_name || '—')}</td>
                 <td>${escapeHtml(ev.event_date || '—')}</td>
                 <td class="amount-cell">${formatRupees(ev.total_fund)}</td>
                 <td>${escapeHtml(ev.author)}</td>
@@ -425,11 +459,12 @@
                 </td>
               </tr>
             `).join('')
-          : `<tr><td colspan="6" class="empty-row">No events yet.</td></tr>`;
+          : `<tr><td colspan="7" class="empty-row">No events in your centres yet.</td></tr>`;
       } else if (activeTab === 'expenses') {
         thead.innerHTML = `
           <tr>
             <th>#</th>
+            <th>Centre</th>
             <th>Event</th>
             <th>Type</th>
             <th>Amount</th>
@@ -442,6 +477,7 @@
           ? cache.expenses.map((ex) => `
               <tr>
                 <td><b>#${ex.id}</b></td>
+                <td>${escapeHtml(ex.centre_name || '—')}</td>
                 <td><span class="event-tag-badge ${ex.event_tag === 'General' ? 'general' : ''}">${escapeHtml(ex.event_tag)}</span></td>
                 <td><span class="type-tag-badge">${escapeHtml(ex.type_tag)}</span></td>
                 <td class="expense-cell">${formatRupees(ex.amount)}</td>
@@ -453,29 +489,106 @@
                 </td>
               </tr>
             `).join('')
-          : `<tr><td colspan="7" class="empty-row">No expenses recorded.</td></tr>`;
+          : `<tr><td colspan="8" class="empty-row">No expenses recorded.</td></tr>`;
       }
     }
 
-    function eventOptionsHtml(selected) {
+    function eventOptionsHtml(selected, centreId) {
       return `<option value="General" ${selected === 'General' ? 'selected' : ''}>General</option>` +
-        cache.events.map((ev) =>
+        cache.events.filter((ev) => ev.centre_id === centreId).map((ev) =>
           `<option value="${escapeHtml(ev.title)}" ${selected === ev.title ? 'selected' : ''}>${escapeHtml(ev.title)}</option>`
         ).join('');
     }
+
+    function managedCentres() {
+      return hier ? hier.centres.filter((c) => c.can_manage) : [];
+    }
+
+    // Roles this admin may hand out (always below their own; Super Admin can give any)
+    function roleOptionsHtml(selected) {
+      return [0, 1, 2, 3, 4]
+        .filter((l) => (accessLevel === 0 ? true : l > accessLevel))
+        .map((l) => `<option value="${l}" ${Number(selected) === l ? 'selected' : ''}>${LEVEL_NAMES[l]}</option>`)
+        .join('');
+    }
+
+    function scopeOptions(level) {
+      if (!hier) return [];
+      const out = [];
+      for (const r of hier.regions) {
+        if (level === 1 && r.can_manage && accessLevel === 0) out.push([r.id, r.name]);
+        for (const z of r.zones) {
+          if (level === 2 && z.can_manage) out.push([z.id, `${z.name} (${r.name})`]);
+          for (const c of z.centres) if (level === 3 && c.can_manage) out.push([c.id, `${c.name} (${z.name})`]);
+        }
+      }
+      return out;
+    }
+
+    function renderScopeSelect(prefix, selected) {
+      const level = Number(document.getElementById(`${prefix}_level`).value);
+      const wrap = document.getElementById(`${prefix}_scopeWrap`);
+      const sel = document.getElementById(`${prefix}_scope`);
+      const label = { 1: 'Region', 2: 'Zone', 3: 'Centre' }[level];
+      wrap.style.display = label ? 'block' : 'none';
+      if (!label) return;
+      wrap.querySelector('label').textContent = `${label} they look after`;
+      sel.innerHTML = scopeOptions(level)
+        .map(([id, name]) => `<option value="${id}" ${String(selected) === String(id) ? 'selected' : ''}>${escapeHtml(name)}</option>`)
+        .join('');
+      // A Centre Admin's home centre defaults to the centre they run
+      if (level === 3) {
+        const home = document.getElementById(`${prefix}_centre`);
+        if (home && !home.dataset.touched) home.value = sel.value;
+        sel.onchange = () => { if (home && !home.dataset.touched) home.value = sel.value; };
+      }
+    }
+
+    function fillAddUserForm() {
+      const lvl = document.getElementById('nu_level');
+      if (!lvl.options.length) lvl.innerHTML = roleOptionsHtml(4);
+      const centreSel = document.getElementById('nu_centre');
+      const current = centreSel.value;
+      centreSel.innerHTML = window.Access.centreOptionsHtml(managedCentres(), { selected: current });
+      centreSel.onchange = () => { centreSel.dataset.touched = '1'; };
+      renderScopeSelect('nu');
+      if (hier) document.getElementById('dbScopeHint').textContent =
+        `Signed in as ${hier.me.role_label}. You can view, edit and delete records in your area. Passwords are encrypted and permanently hidden.`;
+    }
+
+    document.getElementById('addUserForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById('addUserMsg');
+      const level = Number(document.getElementById('nu_level').value);
+      const res = await fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          username: document.getElementById('nu_username').value.trim(),
+          email: document.getElementById('nu_email').value.trim(),
+          password: document.getElementById('nu_password').value,
+          access_level: level,
+          scope_id: [1, 2, 3].includes(level) ? Number(document.getElementById('nu_scope').value) : null,
+          centre_id: Number(document.getElementById('nu_centre').value) || null,
+        }),
+      });
+      if (res.status === 401) return logout();
+      const data = await res.json();
+      msg.textContent = res.ok ? data.message : data.error || 'Could not create the account';
+      msg.className = `message ${res.ok ? 'success' : 'error'}`;
+      if (res.ok) {
+        ['nu_username', 'nu_email', 'nu_password'].forEach((id) => { document.getElementById(id).value = ''; });
+        loadTabData();
+      }
+    });
 
     function openEditUser(id) {
       const u = cache.users.find((x) => x.id === id);
       if (!u) return;
       const box = document.getElementById('editBox');
-      const houseOpts = `<option value="">-- Unassigned --</option>` +
-        cache.houses.map((h) => `<option value="${h.id}" ${u.house_id === h.id ? 'selected' : ''}>${escapeHtml(h.house_name)}</option>`).join('');
-
-      const levelOpts = `
-        ${accessLevel === 0 ? `<option value="0" ${u.access_level === 0 ? 'selected' : ''}>Level 0 (Super Admin)</option>` : ''}
-        <option value="1" ${u.access_level === 1 ? 'selected' : ''}>Level 1 (Admin)</option>
-        <option value="2" ${u.access_level === 2 ? 'selected' : ''}>Level 2 (Operator)</option>
-      `;
+      const housesFor = (centreId) => `<option value="">-- Unassigned --</option>` +
+        cache.houses.filter((h) => h.centre_id === Number(centreId))
+          .map((h) => `<option value="${h.id}" ${u.house_id === h.id ? 'selected' : ''}>${escapeHtml(h.house_name)}</option>`).join('');
 
       box.innerHTML = `
         <h3>Edit User #${u.login_id} (Passwords Hidden)</h3>
@@ -483,7 +596,10 @@
           <div class="donate-grid">
             <div><label>Username</label><input id="eu_username" value="${escapeHtml(u.username)}" required /></div>
             <div><label>Email</label><input id="eu_email" type="email" value="${escapeHtml(u.email)}" required /></div>
-            <div><label>Access Level</label><select id="eu_level">${levelOpts}</select></div>
+            <div><label>Role</label><select id="eu_level" onchange="renderScopeSelect('eu')">${roleOptionsHtml(u.access_level)}</select></div>
+            <div id="eu_scopeWrap"><label>Looks after</label><select id="eu_scope"></select></div>
+            <div><label>Home centre</label>
+              <select id="eu_centre">${window.Access.centreOptionsHtml(managedCentres(), { selected: u.centre_id, blank: u.centre_id ? '' : '-- Not set --' })}</select></div>
             <div>
               <label>Status</label>
               <select id="eu_status">
@@ -492,7 +608,7 @@
                 <option value="rejected" ${u.status === 'rejected' ? 'selected' : ''}>Rejected</option>
               </select>
             </div>
-            <div><label>House</label><select id="eu_house">${houseOpts}</select></div>
+            <div><label>House</label><select id="eu_house">${housesFor(u.centre_id)}</select></div>
             ${cache.userCols.map((c) => `
               <div>
                 <label>${escapeHtml(c.display_label)} <span class="stat-sub">(${escapeHtml(c.data_type || 'text')})</span></label>
@@ -507,6 +623,11 @@
         </form>
       `;
       box.style.display = 'block';
+      const centreSel = document.getElementById('eu_centre');
+      centreSel.dataset.touched = '1';
+      centreSel.onchange = () => { document.getElementById('eu_house').innerHTML = housesFor(centreSel.value); };
+      renderScopeSelect('eu', u.scope_id);
+      box.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
     async function saveUser(e, id) {
@@ -515,10 +636,13 @@
       for (const c of cache.userCols) {
         custom_fields[c.column_name] = document.getElementById(`eu_c_${c.column_name}`).value.trim();
       }
+      const level = Number(document.getElementById('eu_level').value);
       const payload = {
         username: document.getElementById('eu_username').value.trim(),
         email: document.getElementById('eu_email').value.trim(),
-        access_level: Number(document.getElementById('eu_level').value),
+        access_level: level,
+        scope_id: [1, 2, 3].includes(level) ? Number(document.getElementById('eu_scope').value) : null,
+        centre_id: Number(document.getElementById('eu_centre').value) || null,
         status: document.getElementById('eu_status').value,
         house_id: document.getElementById('eu_house').value || null,
         custom_fields,
@@ -536,6 +660,8 @@
           <div class="donate-grid">
             <div><label>House Name</label><input id="eh_name" value="${escapeHtml(h.house_name)}" required /></div>
             <div><label>House Number</label><input id="eh_num" value="${escapeHtml(h.house_number || '')}" /></div>
+            <div><label>Centre (members move with the house)</label>
+              <select id="eh_centre">${window.Access.centreOptionsHtml(managedCentres(), { selected: h.centre_id })}</select></div>
             ${cache.houseCols.map((c) => `
               <div>
                 <label>${escapeHtml(c.display_label)} <span class="stat-sub">(${escapeHtml(c.data_type || 'text')})</span></label>
@@ -561,6 +687,7 @@
       await sendPut(`/api/houses/${id}`, {
         house_name: document.getElementById('eh_name').value.trim(),
         house_number: document.getElementById('eh_num').value.trim(),
+        centre_id: Number(document.getElementById('eh_centre').value),
         custom_fields,
       });
     }
@@ -574,7 +701,7 @@
         <form onsubmit="saveDonation(event, ${d.id})">
           <div class="donate-grid">
             <div><label>Amount (₹)</label><input id="ed_amt" type="number" min="1" step="any" value="${d.amount}" required /></div>
-            <div><label>Event Tag</label><select id="ed_evt">${eventOptionsHtml(d.event_tag)}</select></div>
+            <div><label>Event Tag</label><select id="ed_evt">${eventOptionsHtml(d.event_tag, d.centre_id)}</select></div>
             <div><label>Note</label><input id="ed_note" value="${escapeHtml(d.note || '')}" /></div>
           </div>
           <div class="builder-toolbar" style="margin-bottom:0;">
@@ -632,7 +759,7 @@
         <form onsubmit="saveExpense(event, ${ex.id})">
           <div class="donate-grid">
             <div><label>Amount (₹)</label><input id="eex_amt" type="number" min="1" step="any" value="${ex.amount}" required /></div>
-            <div><label>Event Tag</label><select id="eex_evt">${eventOptionsHtml(ex.event_tag)}</select></div>
+            <div><label>Event Tag</label><select id="eex_evt">${eventOptionsHtml(ex.event_tag, ex.centre_id)}</select></div>
             <div><label>Type Tag</label><input id="eex_type" value="${escapeHtml(ex.type_tag)}" required /></div>
             <div><label>Note</label><input id="eex_note" value="${escapeHtml(ex.note || '')}" /></div>
           </div>

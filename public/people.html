@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>People Lookup</title>
+  <link rel="stylesheet" href="/style.css" />
+  <script src="/theme.js"></script>
+</head>
+<body>
+  <header></header>
+
+  <div class="container">
+    <div class="section">
+      <div class="section-head">
+        <h2>People Lookup</h2>
+        <span class="total-pill" id="resultCount">…</span>
+      </div>
+      <p class="hint">Find any family or person in the community and see their details.</p>
+
+      <div class="page-tabs" role="tablist">
+        <button type="button" class="page-tab-btn active" data-tab="houses" role="tab">Families</button>
+        <button type="button" class="page-tab-btn" data-tab="people" role="tab">People</button>
+      </div>
+
+      <div style="display:grid; grid-template-columns: 2fr 1fr; gap: 10px; margin-top: 14px;" class="people-search-row">
+        <div class="search-bar-wrap" style="margin: 0;">
+          <input type="search" id="searchInput" placeholder="Search by name, house, phone, occupation…" autocomplete="off" />
+        </div>
+        <select id="centreFilter" aria-label="Centre"></select>
+      </div>
+      <div id="peopleMsg" class="message"></div>
+
+      <div id="resultsGrid" class="people-grid"></div>
+    </div>
+
+    <!-- Admin: what members can see -->
+    <div class="section" id="privacySection" hidden>
+      <div class="section-head">
+        <h3>Privacy — what members can see</h3>
+      </div>
+      <p class="hint" style="margin: 4px 0 0;">
+        Untick any detail you don’t want ordinary members to see in People Lookup. Admins still see these details for people in their own centres.
+      </p>
+      <div class="form-grid" style="margin-top: 8px;">
+        <div>
+          <label>Person details</label>
+          <div id="userFieldChecks"></div>
+        </div>
+        <div>
+          <label>Family details</label>
+          <div id="houseFieldChecks"></div>
+        </div>
+      </div>
+      <button type="button" id="savePrivacyBtn">Save privacy settings</button>
+      <div id="privacyMsg" class="message"></div>
+    </div>
+  </div>
+
+  <div id="modalRoot"></div>
+
+  <script>
+    const token = localStorage.getItem('token');
+    if (!token) window.location.href = '/index.html';
+
+    let data = null;
+    let tab = 'houses';
+    let query = '';
+    let nameKey = null;
+    let centreFilter = 'all';
+
+    function esc(str) {
+      return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function logout() {
+      localStorage.clear();
+      window.location.href = '/index.html';
+    }
+
+    function displayName(p) {
+      const real = nameKey ? String(p[nameKey] || '').trim() : '';
+      return real || p.username;
+    }
+
+    function initials(name) {
+      const parts = String(name || '?').trim().split(/\s+/).filter(Boolean);
+      return ((parts[0] || '?')[0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+    }
+
+    function formatValue(field, value) {
+      if (value === null || value === undefined || String(value).trim() === '') return '<span class="hint" style="margin:0;">—</span>';
+      const v = String(value);
+      if (field.data_type === 'date' && /^\d{4}-\d{2}-\d{2}$/.test(v)) {
+        const d = new Date(v + 'T00:00:00');
+        return esc(isNaN(d) ? v : d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }));
+      }
+      if (field.data_type === 'tel') return `<a href="tel:${esc(v.replace(/[^\d+]/g, ''))}">${esc(v)}</a>`;
+      if (field.data_type === 'email') return `<a href="mailto:${esc(v)}">${esc(v)}</a>`;
+      return esc(v);
+    }
+
+    function searchText(obj, fields) {
+      return [obj.username, obj.house_name, ...fields.map((f) => obj[f.key])]
+        .filter((v) => v !== null && v !== undefined)
+        .join(' ')
+        .toLowerCase();
+    }
+
+    function matches(obj, fields, extra = '') {
+      if (centreFilter !== 'all' && String(obj.centre_id) !== String(centreFilter)) return false;
+      if (!query) return true;
+      const hay = searchText(obj, fields) + ' ' + extra.toLowerCase();
+      return query.split(/\s+/).every((word) => hay.includes(word));
+    }
+
+    function render() {
+      if (!data) return;
+      const grid = document.getElementById('resultsGrid');
+      const countEl = document.getElementById('resultCount');
+
+      if (tab === 'houses') {
+        const list = data.houses.filter((h) =>
+          matches(h, data.house_fields, h.members.map((m) => {
+            const p = data.people.find((x) => x.id === m.id);
+            return p ? `${p.username} ${displayName(p)}` : m.username;
+          }).join(' '))
+        );
+        const familyCount = list.filter((h) => h.id > 0).length;
+        countEl.textContent = `${familyCount} ${familyCount === 1 ? 'family' : 'families'}`;
+        grid.innerHTML = list.length
+          ? list.map((h) => `
+              <button type="button" class="person-card" data-house="${h.id}">
+                <span class="avatar house">${esc(initials(h.house_name))}</span>
+                <span style="min-width:0;">
+                  <div class="person-name">${esc(h.house_name)}</div>
+                  <div class="person-sub">${[h.centre_name, h.house_number ? `Code ${h.house_number}` : '', `${h.members.length} member${h.members.length === 1 ? '' : 's'}`].filter(Boolean).map(esc).join(' · ')}</div>
+                </span>
+              </button>`).join('')
+          : `<p class="hint" style="grid-column:1/-1;">No families match “${esc(query)}”.</p>`;
+      } else {
+        const list = data.people.filter((p) => matches(p, data.user_fields));
+        countEl.textContent = `${list.length} ${list.length === 1 ? 'person' : 'people'}`;
+        grid.innerHTML = list.length
+          ? list.map((p) => {
+              const name = displayName(p);
+              const sub = [p.centre_name, p.house_name, p.role && p.role !== 'User' ? p.role : ''].filter(Boolean).join(' · ') || 'No family assigned';
+              return `
+                <button type="button" class="person-card" data-person="${p.id}">
+                  <span class="avatar">${esc(initials(name))}</span>
+                  <span style="min-width:0;">
+                    <div class="person-name">${esc(name)}</div>
+                    <div class="person-sub">${esc(sub)}</div>
+                  </span>
+                </button>`;
+            }).join('')
+          : `<p class="hint" style="grid-column:1/-1;">No people match “${esc(query)}”.</p>`;
+      }
+    }
+
+    function closeModal() {
+      document.getElementById('modalRoot').innerHTML = '';
+      document.removeEventListener('keydown', escClose);
+    }
+
+    function escClose(e) {
+      if (e.key === 'Escape') closeModal();
+    }
+
+    function openModal(html) {
+      document.getElementById('modalRoot').innerHTML = `
+        <div class="modal-backdrop" id="modalBackdrop">
+          <div class="modal-card" role="dialog" aria-modal="true">
+            <button type="button" class="btn-soft modal-close" data-close>Close</button>
+            ${html}
+          </div>
+        </div>`;
+      document.addEventListener('keydown', escClose);
+    }
+
+    function showPerson(id) {
+      const p = data.people.find((x) => x.id === id);
+      if (!p) return;
+      const name = displayName(p);
+      const house = data.houses.find((h) => h.id === p.house_id);
+      const rows = [
+        ['Username', esc(p.username)],
+        ['Centre', esc(p.centre_name || '—')],
+        ...(p.role && p.role !== 'User' ? [['Role', esc(p.role)]] : []),
+        ['Family', house ? `<button type="button" class="link-btn" data-house="${house.id}">${esc(house.house_name)}</button>` : '<span class="hint" style="margin:0;">—</span>'],
+        ...data.user_fields.filter((f) => f.key !== nameKey).map((f) => [f.label, formatValue(f, p[f.key])]),
+      ];
+      openModal(`
+        <div class="detail-head">
+          <span class="avatar lg">${esc(initials(name))}</span>
+          <div><h2 style="margin:0;">${esc(name)}</h2>${house ? `<div class="hint" style="margin:0;">${esc(house.house_name)}</div>` : ''}</div>
+        </div>
+        <dl class="detail-list">
+          ${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('')}
+        </dl>`);
+    }
+
+    function showHouse(id) {
+      const h = data.houses.find((x) => x.id === id);
+      if (!h) return;
+      const members = h.members
+        .map((m) => data.people.find((p) => p.id === m.id))
+        .filter(Boolean);
+      const relKey = (data.user_fields.find((f) => /relation/i.test(f.label)) || {}).key;
+      openModal(`
+        <div class="detail-head">
+          <span class="avatar lg house">${esc(initials(h.house_name))}</span>
+          <div><h2 style="margin:0;">${esc(h.house_name)}</h2>
+          <div class="hint" style="margin:0;">${[h.centre_name, `${members.length} member${members.length === 1 ? '' : 's'}`].filter(Boolean).map(esc).join(' · ')}</div></div>
+        </div>
+        ${h.id < 0 || !data.house_fields.length ? '' : `<dl class="detail-list">
+          ${data.house_fields.map((f) => `<dt>${esc(f.label)}</dt><dd>${formatValue(f, h[f.key])}</dd>`).join('')}
+        </dl>`}
+        <h3 style="margin: 18px 0 8px;">Members</h3>
+        ${members.length
+          ? `<div class="member-list">${members.map((p) => {
+              const rel = relKey && p[relKey] ? ` · ${p[relKey]}` : '';
+              return `<button type="button" class="member-chip" data-person="${p.id}">${esc(displayName(p) + rel)}</button>`;
+            }).join('')}</div>`
+          : '<p class="hint">No members are assigned to this family yet.</p>'}`);
+    }
+
+    document.addEventListener('click', (e) => {
+      if (e.target.closest('[data-close]') || e.target.id === 'modalBackdrop') {
+        closeModal();
+        return;
+      }
+      const person = e.target.closest('[data-person]');
+      const house = e.target.closest('[data-house]');
+      if (person) showPerson(Number(person.dataset.person));
+      else if (house) showHouse(Number(house.dataset.house));
+    });
+
+    document.querySelectorAll('[data-tab]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        tab = btn.dataset.tab;
+        document.querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('active', b === btn));
+        render();
+      });
+    });
+
+    document.getElementById('centreFilter').addEventListener('change', (e) => {
+      centreFilter = e.target.value;
+      render();
+    });
+
+    document.getElementById('searchInput').addEventListener('input', (e) => {
+      query = e.target.value.trim().toLowerCase();
+      render();
+    });
+
+    // ---------- Admin privacy settings ----------
+
+    function renderPrivacy() {
+      if (!data.is_super) return;
+      document.getElementById('privacySection').hidden = false;
+      const hiddenU = new Set(data.settings.hidden_user_fields);
+      const hiddenH = new Set(data.settings.hidden_house_fields);
+      const check = (group, f, hidden) => `
+        <label class="check-row" style="margin-top:6px;">
+          <input type="checkbox" data-group="${group}" value="${esc(f.key)}" ${hidden.has(f.key) ? '' : 'checked'} />
+          ${esc(f.label)}
+        </label>`;
+      document.getElementById('userFieldChecks').innerHTML = data.all_user_fields.map((f) => check('user', f, hiddenU)).join('');
+      document.getElementById('houseFieldChecks').innerHTML = data.all_house_fields.map((f) => check('house', f, hiddenH)).join('');
+    }
+
+    document.getElementById('savePrivacyBtn').addEventListener('click', async () => {
+      const msg = document.getElementById('privacyMsg');
+      const hidden = (group) => Array.from(document.querySelectorAll(`input[data-group="${group}"]`))
+        .filter((c) => !c.checked)
+        .map((c) => c.value);
+      const res = await fetch('/api/directory/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ hidden_user_fields: hidden('user'), hidden_house_fields: hidden('house') }),
+      });
+      if (res.status === 401) return logout();
+      const body = await res.json();
+      msg.textContent = res.ok ? body.message : body.error || 'Could not save';
+      msg.className = `message ${res.ok ? 'success' : 'error'}`;
+      if (res.ok) data.settings = body.settings;
+    });
+
+    async function load() {
+      const msg = document.getElementById('peopleMsg');
+      try {
+        const res = await fetch('/api/directory', { headers: { Authorization: `Bearer ${token}` } });
+        if (res.status === 401) return logout();
+        const body = await res.json();
+        if (!res.ok) {
+          msg.textContent = body.error || 'Could not load people';
+          msg.className = 'message error';
+          return;
+        }
+        data = body;
+        const nameField = data.user_fields.find((f) => /^(full\s*)?name$/i.test(f.label.trim()));
+        nameKey = nameField ? nameField.key : null;
+
+        // People who are not in any family are listed under a separate card per centre
+        const loners = data.people.filter((p) => !p.house_id || !data.houses.some((h) => h.id === p.house_id));
+        const lonersByCentre = new Map();
+        for (const p of loners) {
+          if (!lonersByCentre.has(p.centre_id)) lonersByCentre.set(p.centre_id, []);
+          lonersByCentre.get(p.centre_id).push(p);
+        }
+        for (const [centreId, list] of lonersByCentre) {
+          data.houses.push({
+            id: -1 - data.houses.length,
+            house_name: 'Not in a family yet',
+            house_number: '',
+            centre_id: centreId,
+            centre_name: list[0].centre_name,
+            members: list.map((p) => ({ id: p.id, username: p.username })),
+          });
+        }
+
+        const sel = document.getElementById('centreFilter');
+        sel.innerHTML = '<option value="all">All centres</option>' +
+          data.centres.map((c) => `<option value="${c.id}">${esc(c.name)} (${esc(c.zone_name)})</option>`).join('');
+
+        renderPrivacy();
+        render();
+      } catch {
+        msg.textContent = 'Could not connect to server.';
+        msg.className = 'message error';
+      }
+    }
+
+    load();
+  </script>
+  <script src="/nav.js"></script>
+</body>
+</html>

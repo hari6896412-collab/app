@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gallery</title>
+  <link rel="stylesheet" href="/style.css" />
+  <script src="/theme.js"></script>
+</head>
+<body>
+  <header></header>
+
+  <div class="container">
+    <div class="section" style="margin-bottom: 20px;">
+      <div class="section-head">
+        <h2>Gallery</h2>
+        <span class="total-pill" id="galleryCount">0 items</span>
+      </div>
+      <p class="hint" style="margin-bottom: 0;">Photos and videos from our community.</p>
+
+      <div class="filter-bar" id="albumFilters"></div>
+      <div class="filter-bar" style="margin-top: 8px;">
+        <button type="button" class="filter-btn active" data-kind="all">Everything</button>
+        <button type="button" class="filter-btn" data-kind="image">Photos</button>
+        <button type="button" class="filter-btn" data-kind="video">Videos</button>
+      </div>
+      <div id="galleryMsg" class="message"></div>
+    </div>
+
+    <!-- Admin upload panel -->
+    <div class="section" id="uploadSection" hidden style="margin-bottom: 20px;">
+      <h3>Add photos &amp; videos</h3>
+      <p class="hint" style="margin: 4px 0 12px;">Photos up to 15 MB each, videos up to 250 MB (MP4 works on all phones).</p>
+
+      <label class="drop-zone" id="dropZone" style="margin-top: 0;">
+        Click to choose files, or drag &amp; drop them here
+        <input type="file" id="fileInput" multiple />
+      </label>
+
+      <div id="pendingWrap" hidden>
+        <div class="form-grid" style="margin-top: 6px;">
+          <div>
+            <label for="albumInput">Album (optional)</label>
+            <input type="text" id="albumInput" list="albumList" placeholder="e.g. Diwali 2026" maxlength="60" />
+            <datalist id="albumList"></datalist>
+          </div>
+        </div>
+        <div class="pending-grid" id="pendingGrid"></div>
+        <div class="upload-progress" id="batchProgress" hidden><span></span></div>
+        <div style="display:flex; gap:8px; flex-wrap: wrap;">
+          <button type="button" id="startUploadBtn">Upload</button>
+          <button type="button" class="btn-soft" id="clearPendingBtn" style="margin-top: 18px;">Clear</button>
+        </div>
+      </div>
+      <div id="uploadMsg" class="message"></div>
+    </div>
+
+    <div id="galleryGrid" class="gallery-grid"></div>
+  </div>
+
+  <script src="/uploads.js"></script>
+  <script src="/lightbox.js"></script>
+  <script>
+    const token = localStorage.getItem('token');
+    const accessLevel = Number(localStorage.getItem('access_level'));
+    const isAdmin = accessLevel >= 0 && accessLevel <= 3;
+    if (!token) window.location.href = '/index.html';
+
+    let items = [];
+    let albums = [];
+    let albumFilter = '';
+    let kindFilter = 'all';
+    let pending = []; // { file, previewUrl, caption }
+
+    function esc(str) {
+      return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function logout() {
+      localStorage.clear();
+      window.location.href = '/index.html';
+    }
+
+    function filtered() {
+      return items.filter((i) =>
+        (!albumFilter || i.album === albumFilter) && (kindFilter === 'all' || i.media_type === kindFilter)
+      );
+    }
+
+    function renderFilters() {
+      const holder = document.getElementById('albumFilters');
+      if (!albums.length) {
+        holder.innerHTML = '';
+        return;
+      }
+      holder.innerHTML = [['', 'All albums'], ...albums.map((a) => [a, a])]
+        .map(([val, label]) =>
+          `<button type="button" class="filter-btn ${albumFilter === val ? 'active' : ''}" data-album="${esc(val)}">${esc(label)}</button>`)
+        .join('');
+      document.getElementById('albumList').innerHTML = albums.map((a) => `<option value="${esc(a)}"></option>`).join('');
+    }
+
+    function renderGrid() {
+      const grid = document.getElementById('galleryGrid');
+      const list = filtered();
+      document.getElementById('galleryCount').textContent = `${list.length} ${list.length === 1 ? 'item' : 'items'}`;
+
+      if (!list.length) {
+        grid.innerHTML = `
+          <div class="section welcome-box" style="grid-column: 1 / -1;">
+            <h2>${items.length ? 'Nothing matches this filter' : 'No photos yet'}</h2>
+            <p class="hint" style="margin-bottom:0;">${isAdmin && !items.length ? 'Use “Add photos & videos” above to start the gallery.' : 'Check back soon.'}</p>
+          </div>`;
+        return;
+      }
+
+      grid.innerHTML = list.map((item, idx) => {
+        const media = item.media_type === 'video'
+          ? `<video src="${esc(item.url)}#t=0.5" muted playsinline preload="metadata"></video>`
+          : `<img src="${esc(item.url)}" alt="${esc(item.caption || 'Photo')}" loading="lazy" />`;
+        const info = [item.caption, item.album && !albumFilter ? item.album : ''].filter(Boolean).join(' · ');
+        const actions = item.can_manage
+          ? `<div class="tile-actions">
+               <button type="button" data-edit="${item.id}">Edit</button>
+               <button type="button" class="danger" data-del="${item.id}">Delete</button>
+             </div>`
+          : '';
+        return `
+          <div class="gallery-tile" data-idx="${idx}" tabindex="0" role="button" aria-label="${esc(item.caption || (item.media_type === 'video' ? 'Video' : 'Photo'))}">
+            ${media}
+            ${item.media_type === 'video' ? '<span class="tile-badge">▶ VIDEO</span>' : ''}
+            ${info ? `<div class="tile-info">${esc(info)}</div>` : ''}
+            ${actions}
+          </div>`;
+      }).join('');
+    }
+
+    async function loadGallery() {
+      const msg = document.getElementById('galleryMsg');
+      try {
+        const res = await fetch('/api/gallery', { headers: { Authorization: `Bearer ${token}` } });
+        if (res.status === 401) return logout();
+        const data = await res.json();
+        if (!res.ok) {
+          msg.textContent = data.error || 'Could not load the gallery';
+          msg.className = 'message error';
+          return;
+        }
+        items = data.items || [];
+        albums = data.albums || [];
+        if (albumFilter && !albums.includes(albumFilter)) albumFilter = '';
+        renderFilters();
+        renderGrid();
+      } catch {
+        msg.textContent = 'Could not connect to server.';
+        msg.className = 'message error';
+      }
+    }
+
+    document.getElementById('albumFilters').addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-album]');
+      if (!btn) return;
+      albumFilter = btn.dataset.album;
+      renderFilters();
+      renderGrid();
+    });
+
+    document.querySelectorAll('[data-kind]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        kindFilter = btn.dataset.kind;
+        document.querySelectorAll('[data-kind]').forEach((b) => b.classList.toggle('active', b === btn));
+        renderGrid();
+      });
+    });
+
+    const grid = document.getElementById('galleryGrid');
+
+    grid.addEventListener('click', async (e) => {
+      const del = e.target.closest('[data-del]');
+      const edit = e.target.closest('[data-edit]');
+
+      if (del) {
+        e.stopPropagation();
+        if (!confirm('Delete this from the gallery?')) return;
+        const res = await fetch(`/api/gallery/${del.dataset.del}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.status === 401) return logout();
+        loadGallery();
+        return;
+      }
+
+      if (edit) {
+        e.stopPropagation();
+        const item = items.find((i) => i.id === Number(edit.dataset.edit));
+        const caption = prompt('Caption', item.caption || '');
+        if (caption === null) return;
+        const album = prompt('Album (leave empty for none)', item.album || '');
+        if (album === null) return;
+        const res = await fetch(`/api/gallery/${item.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ caption, album }),
+        });
+        if (res.status === 401) return logout();
+        loadGallery();
+        return;
+      }
+
+      const tile = e.target.closest('.gallery-tile');
+      if (tile) {
+        const list = filtered().map((i) => ({ type: i.media_type, url: i.url, caption: i.caption }));
+        window.openLightbox(list, Number(tile.dataset.idx));
+      }
+    });
+
+    grid.addEventListener('keydown', (e) => {
+      if ((e.key === 'Enter' || e.key === ' ') && e.target.classList.contains('gallery-tile')) {
+        e.preventDefault();
+        e.target.click();
+      }
+    });
+
+    // ---------- Admin uploads ----------
+
+    function renderPending() {
+      document.getElementById('pendingWrap').hidden = pending.length === 0;
+      document.getElementById('startUploadBtn').textContent = `Upload ${pending.length} item${pending.length === 1 ? '' : 's'}`;
+      document.getElementById('pendingGrid').innerHTML = pending.map((p, i) => `
+        <div class="pending-item">
+          ${p.file.type.startsWith('video/')
+            ? `<video class="pending-thumb" src="${p.previewUrl}" muted preload="metadata"></video>`
+            : `<img class="pending-thumb" src="${p.previewUrl}" alt="" />`}
+          <input type="text" placeholder="Caption (optional)" value="${esc(p.caption)}" data-cap="${i}" maxlength="200" />
+          <button type="button" class="mini-btn danger" data-remove="${i}" style="margin-top:6px;">Remove</button>
+        </div>`).join('');
+    }
+
+    function addFiles(fileList) {
+      const msg = document.getElementById('uploadMsg');
+      msg.className = 'message';
+      for (const file of Array.from(fileList)) {
+        const isImage = /^image\/(png|jpe?g|gif|webp)$/.test(file.type);
+        const isVideo = /^video\/(mp4|webm|quicktime|ogg)$/.test(file.type);
+        if (!isImage && !isVideo) {
+          msg.textContent = `Skipped "${file.name}" — use JPG/PNG/WEBP/GIF photos or MP4/WEBM/MOV videos.`;
+          msg.className = 'message error';
+          continue;
+        }
+        const max = (isVideo ? 250 : 15) * 1024 * 1024;
+        if (file.size > max) {
+          msg.textContent = `Skipped "${file.name}" — it is larger than ${isVideo ? 250 : 15} MB.`;
+          msg.className = 'message error';
+          continue;
+        }
+        pending.push({ file, previewUrl: URL.createObjectURL(file), caption: '' });
+      }
+      renderPending();
+    }
+
+    function clearPending() {
+      pending.forEach((p) => URL.revokeObjectURL(p.previewUrl));
+      pending = [];
+      renderPending();
+    }
+
+    async function startUpload() {
+      if (!pending.length) return;
+      const btn = document.getElementById('startUploadBtn');
+      const msg = document.getElementById('uploadMsg');
+      const bar = document.getElementById('batchProgress');
+      const album = document.getElementById('albumInput').value.trim();
+      btn.disabled = true;
+      bar.hidden = false;
+      msg.className = 'message';
+
+      const uploaded = [];
+      const failed = [];
+      const total = pending.length;
+
+      for (let i = 0; i < total; i++) {
+        const p = pending[i];
+        msg.textContent = `Uploading ${i + 1} of ${total}…`;
+        try {
+          const r = await window.uploadMedia(p.file, {
+            onProgress: (pct) => { bar.querySelector('span').style.width = `${Math.round(((i + pct / 100) / total) * 100)}%`; },
+          });
+          uploaded.push({ url: r.url, caption: p.caption, album });
+        } catch (err) {
+          failed.push(`${p.file.name}: ${err.message}`);
+        }
+      }
+
+      if (uploaded.length) {
+        const res = await fetch('/api/gallery', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ items: uploaded }),
+        });
+        if (res.status === 401) return logout();
+        const data = await res.json();
+        if (!res.ok) failed.push(data.error || 'Could not save to the gallery');
+      }
+
+      bar.hidden = true;
+      bar.querySelector('span').style.width = '0';
+      btn.disabled = false;
+      clearPending();
+
+      if (failed.length) {
+        msg.textContent = `${uploaded.length} added. Problems: ${failed.join(' · ')}`;
+        msg.className = 'message error';
+      } else {
+        msg.textContent = `${uploaded.length} item(s) added to the gallery.`;
+        msg.className = 'message success';
+      }
+      if (album) albumFilter = album;
+      loadGallery();
+    }
+
+    if (isAdmin) {
+      document.getElementById('uploadSection').hidden = false;
+      const input = document.getElementById('fileInput');
+      input.accept = window.MEDIA_ACCEPT.all;
+      input.addEventListener('change', () => {
+        addFiles(input.files);
+        input.value = '';
+      });
+
+      const zone = document.getElementById('dropZone');
+      ['dragenter', 'dragover'].forEach((ev) => zone.addEventListener(ev, (e) => {
+        e.preventDefault();
+        zone.classList.add('dragging');
+      }));
+      ['dragleave', 'drop'].forEach((ev) => zone.addEventListener(ev, (e) => {
+        e.preventDefault();
+        zone.classList.remove('dragging');
+      }));
+      zone.addEventListener('drop', (e) => addFiles(e.dataTransfer.files));
+
+      document.getElementById('pendingGrid').addEventListener('input', (e) => {
+        if (e.target.dataset.cap !== undefined) pending[Number(e.target.dataset.cap)].caption = e.target.value;
+      });
+      document.getElementById('pendingGrid').addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-remove]');
+        if (!btn) return;
+        const [removed] = pending.splice(Number(btn.dataset.remove), 1);
+        URL.revokeObjectURL(removed.previewUrl);
+        renderPending();
+      });
+      document.getElementById('startUploadBtn').addEventListener('click', startUpload);
+      document.getElementById('clearPendingBtn').addEventListener('click', clearPending);
+    }
+
+    loadGallery();
+  </script>
+  <script src="/nav.js"></script>
+</body>
+</html>

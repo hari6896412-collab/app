@@ -4,7 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Houses & Donor Lookup</title>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="/style.css" />
+  <script src="/theme.js"></script>
 </head>
 <body>
   <header></header>
@@ -64,7 +65,7 @@
     <div id="manageTab" style="display: none;">
       <!-- LEVEL 0 ONLY: Add or Remove Custom Columns in Houses -->
       <div class="section l0-panel" id="l0HouseColSection" style="display: none;">
-        <h2>Level 0: Manage Houses Columns</h2>
+        <h2>Super Admin: Manage Houses Columns</h2>
         <p class="hint">Choose a label and data type (including custom dropdowns). Existing houses with missing values stay error-free.</p>
         <form id="addHouseColForm">
           <div class="donate-grid">
@@ -119,6 +120,7 @@
         <hr class="dashed-divider" />
 
         <h3 class="report-subhead">Assign a Person to a House</h3>
+        <p class="hint" style="margin: 0 0 6px;">A family belongs to one centre, so the person moves to that house's centre.</p>
         <form id="assignMemberForm">
           <div class="donate-grid">
             <div>
@@ -159,13 +161,14 @@
     </div>
   </div>
 
+  <script src="/access.js"></script>
   <script>
     const token = localStorage.getItem('token');
     const accessLevel = Number(localStorage.getItem('access_level'));
 
     if (!token) {
       window.location.href = '/index.html';
-    } else if (accessLevel > 1) {
+    } else if (accessLevel > 3) {
       window.location.href = '/dashboard.html';
     }
 
@@ -180,6 +183,7 @@
     let houseCustomCols = [];
     let currentMatches = [];
     let selectedIndex = -1;
+    let managedCentres = [];
 
     function logout() {
       localStorage.clear();
@@ -619,7 +623,12 @@
         `;
       }).join('');
 
+      const prevCentre = document.getElementById('houseCentre') ? document.getElementById('houseCentre').value : '';
       grid.innerHTML = `
+        <div>
+          <label for="houseCentre">Centre</label>
+          <select id="houseCentre" required>${window.Access.centreOptionsHtml(managedCentres, { selected: prevCentre })}</select>
+        </div>
         <div>
           <label for="houseName">House Name</label>
           <input type="text" id="houseName" placeholder="e.g., Rose Villa" required />
@@ -648,7 +657,10 @@
       const res = await fetch('/api/houses', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ house_name, house_number, custom_fields }),
+        body: JSON.stringify({
+          house_name, house_number, custom_fields,
+          centre_id: Number(document.getElementById('houseCentre').value),
+        }),
       });
       if (res.status === 401) return logout();
       const data = await res.json();
@@ -714,6 +726,7 @@
           <th>ID</th>
           <th>House Name</th>
           <th>Number</th>
+          <th>Centre</th>
           ${houseCustomCols.map((c) => `<th>${escapeHtml(c.display_label)}</th>`).join('')}
           <th>Members</th>
           <th>Action</th>
@@ -724,7 +737,8 @@
         ? manageHousesData
         : manageHousesData.filter((h) => {
             const nameHit = String(h.house_name || '').toLowerCase().includes(q);
-            const numHit = String(h.house_number || '').toLowerCase().includes(q);
+            const numHit = String(h.house_number || '').toLowerCase().includes(q) ||
+              String(h.centre_name || '').toLowerCase().includes(q);
             const memberHit = (h.members || []).some((m) =>
               String(m.username || '').toLowerCase().includes(q) ||
               String(m.login_id || '').includes(q.replace(/^#/, ''))
@@ -735,7 +749,7 @@
       countEl.textContent = `${filtered.length} of ${manageHousesData.length} house(s)`;
 
       if (filtered.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="${5 + houseCustomCols.length}" class="empty-row">${
+        tbody.innerHTML = `<tr><td colspan="${6 + houseCustomCols.length}" class="empty-row">${
           manageHousesData.length === 0 ? 'No houses added yet.' : 'No houses match your filter.'
         }</td></tr>`;
         return;
@@ -751,6 +765,7 @@
             <td><b>#${h.id}</b></td>
             <td><b>${escapeHtml(h.house_name)}</b></td>
             <td>${escapeHtml(h.house_number || '—')}</td>
+            <td>${escapeHtml(h.centre_name || '—')}</td>
             ${houseCustomCols.map((c) => `<td>${displayCell(h[c.column_name])}</td>`).join('')}
             <td><div class="member-chips">${membersHtml}</div></td>
             <td><button class="btn-reject" onclick="deleteHouse(${h.id})">Delete</button></td>
@@ -780,6 +795,8 @@
       const byPersonData = await byPersonRes.json();
       const byHouseData = await byHouseRes.json();
 
+      const h = await window.Access.hierarchy();
+      managedCentres = h ? h.centres.filter((c) => c.can_manage) : [];
       houseCustomCols = hData.custom_columns || [];
       manageHousesData = hData.houses || [];
       peopleData = byPersonData.people || [];
@@ -791,13 +808,13 @@
 
       const userSel = document.getElementById('assignUserSelect');
       userSel.innerHTML = (uData.users || []).map((u) =>
-        `<option value="${u.id}">#${u.login_id} — ${escapeHtml(u.username)} (${escapeHtml(u.house_name || 'No House')})</option>`
+        `<option value="${u.id}">#${u.login_id} — ${escapeHtml(u.username)} (${escapeHtml(u.centre_name || 'No centre')} · ${escapeHtml(u.house_name || 'No House')})</option>`
       ).join('');
 
       const houseSel = document.getElementById('assignHouseSelect');
       houseSel.innerHTML = `<option value="">-- Remove from House (Unassigned) --</option>` +
         manageHousesData.map((h) =>
-          `<option value="${h.id}">${escapeHtml(h.house_name)}${h.house_number ? ' (' + escapeHtml(h.house_number) + ')' : ''}</option>`
+          `<option value="${h.id}">${escapeHtml(h.house_name)}${h.house_number ? ' (' + escapeHtml(h.house_number) + ')' : ''} — ${escapeHtml(h.centre_name)}</option>`
         ).join('');
 
       updateSummaryPill();

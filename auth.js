@@ -23,7 +23,7 @@ function requireAuth(req, res, next) {
 
   // Always check live account state (passwords are never selected)
   const liveUser = db
-    .prepare('SELECT id, login_id, username, access_level, status FROM users WHERE id = ?')
+    .prepare('SELECT id, login_id, username, access_level, status, centre_id, scope_id FROM users WHERE id = ?')
     .get(payload.id);
 
   if (!liveUser) {
@@ -53,4 +53,8 @@ function requireLevel(...allowedLevels) {
   };
 }
 
-module.exports = { getAuthUser, requireAuth, requireLevel };
+// Any admin: Super (0), Region (1), Zone (2) or Centre (3). Jurisdiction is checked inside each route.
+const requireAdmin = requireLevel(0, 1, 2, 3);
+const requireSuper = requireLevel(0);
+
+module.exports = { getAuthUser, requireAuth, requireLevel, requireAdmin, requireSuper };

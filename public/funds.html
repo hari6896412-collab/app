@@ -4,40 +4,28 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Community Funds</title>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="/style.css" />
+  <script src="/theme.js"></script>
 </head>
 <body>
   <header></header>
 
   <div class="container">
-    <!-- Separate Subtotal Event Display -->
-    <div class="subtotal-card">
-      <div>
-        <h2>Subtotal (All Funds)</h2>
-        <p class="subtotal-sub" id="subtotalBreakdown">Combined total across General &amp; all events</p>
-      </div>
-      <div class="subtotal-amount" id="subtotalValue">₹0</div>
-    </div>
-
-    <!-- Breakdown by Event -->
     <div class="section">
-      <h2>Event Funds</h2>
-      <p class="hint">Public transparency ledger — visible to everyone.</p>
-      <div id="fundsMsg" class="message"></div>
-
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Event / Cause</th>
-              <th>Event Date</th>
-              <th>Total Fund</th>
-            </tr>
-          </thead>
-          <tbody id="fundsTableBody"></tbody>
-        </table>
+      <div class="section-head">
+        <h2>Event Funds</h2>
+        <span class="total-pill" id="eventCount">…</span>
       </div>
+      <p class="hint">Public transparency ledger — money raised by each event, visible to everyone.</p>
+
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <label for="centreFilter" style="margin:0;">Centre</label>
+        <select id="centreFilter" style="max-width: 340px;"></select>
+      </div>
+      <div id="fundsMsg" class="message"></div>
     </div>
+
+    <div id="fundsGroups"></div>
   </div>
 
   <script>
@@ -53,10 +41,55 @@
       return '₹' + Number(val || 0).toLocaleString('en-IN');
     }
 
+    let events = [];
+
+    function render() {
+      const filter = document.getElementById('centreFilter').value;
+      const list = events.filter((ev) => filter === 'all' || String(ev.centre_id) === filter);
+      document.getElementById('eventCount').textContent = `${list.length} ${list.length === 1 ? 'event' : 'events'}`;
+
+      const groups = new Map();
+      for (const ev of list) {
+        const key = ev.centre_id ?? 'none';
+        if (!groups.has(key)) groups.set(key, { ev, items: [] });
+        groups.get(key).items.push(ev);
+      }
+
+      const holder = document.getElementById('fundsGroups');
+      if (!list.length) {
+        holder.innerHTML = '<div class="section welcome-box"><h2>No events yet</h2><p class="hint" style="margin:0;">Funds raised by events will appear here.</p></div>';
+        return;
+      }
+
+      holder.innerHTML = Array.from(groups.values()).map(({ ev, items }) => `
+        <div class="section" style="margin-top: 20px;">
+          <div class="section-head">
+            <h3>${escapeHtml(ev.centre_name || 'Unassigned centre')}</h3>
+            <span class="stat-sub">${escapeHtml([ev.zone_name, ev.region_name].filter(Boolean).join(' · '))}</span>
+          </div>
+          <div class="table-wrap" style="margin-top: 10px;">
+            <table>
+              <thead>
+                <tr>
+                  <th>Event</th>
+                  <th>Event Date</th>
+                  <th>Funds Raised</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${items.map((e) => `
+                  <tr>
+                    <td><span class="event-tag-badge">${escapeHtml(e.title)}</span></td>
+                    <td>${escapeHtml(e.event_date || '—')}</td>
+                    <td class="amount-cell">${formatRupees(e.total_fund)}</td>
+                  </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>`).join('');
+    }
+
     async function loadFunds() {
-      const subtotalVal = document.getElementById('subtotalValue');
-      const breakdown = document.getElementById('subtotalBreakdown');
-      const tbody = document.getElementById('fundsTableBody');
       const msg = document.getElementById('fundsMsg');
       msg.className = 'message';
 
@@ -70,41 +103,28 @@
           return;
         }
 
-        const subtotalAmount = data.subtotal ? data.subtotal.total_fund : 0;
-        const generalFund = data.general_fund || 0;
-        const eventsOnly = subtotalAmount - generalFund;
+        events = data.events || [];
+        const centres = new Map();
+        for (const ev of events) if (ev.centre_id) centres.set(ev.centre_id, ev);
+        const sel = document.getElementById('centreFilter');
+        sel.innerHTML = '<option value="all">All centres</option>' +
+          Array.from(centres.values())
+            .map((ev) => `<option value="${ev.centre_id}">${escapeHtml(ev.centre_name)} (${escapeHtml(ev.zone_name)})</option>`)
+            .join('');
 
-        subtotalVal.textContent = formatRupees(subtotalAmount);
-        breakdown.textContent = `General: ${formatRupees(generalFund)}  ·  Events: ${formatRupees(eventsOnly)}`;
-
-        const rows = [];
-        rows.push(`
-          <tr>
-            <td><span class="event-tag-badge general">General</span></td>
-            <td>—</td>
-            <td class="amount-cell">${formatRupees(generalFund)}</td>
-          </tr>
-        `);
-
-        for (const ev of data.events) {
-          rows.push(`
-            <tr>
-              <td><span class="event-tag-badge">${escapeHtml(ev.title)}</span></td>
-              <td>${escapeHtml(ev.event_date || '—')}</td>
-              <td class="amount-cell">${formatRupees(ev.total_fund)}</td>
-            </tr>
-          `);
-        }
-
-        tbody.innerHTML = rows.join('');
+        // Members start on their own centre
+        const mine = localStorage.getItem('centre_id');
+        if (mine && centres.has(Number(mine))) sel.value = mine;
+        render();
       } catch {
         msg.textContent = 'Could not connect to server.';
         msg.className = 'message error';
       }
     }
 
+    document.getElementById('centreFilter').addEventListener('change', render);
     loadFunds();
   </script>
-  <script src="nav.js"></script>
+  <script src="/nav.js"></script>
 </body>
 </html>

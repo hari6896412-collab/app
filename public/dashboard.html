@@ -4,7 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Dashboard</title>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="/style.css" />
+  <script src="/theme.js"></script>
 </head>
 <body>
   <header></header>
@@ -13,7 +14,8 @@
     <!-- Make a Donation (All Logged-In Users — Active Events Only) -->
     <div class="section">
       <h2>Make a Donation</h2>
-      <p class="hint">Test mode — no real money is charged. An acknowledgement email &amp; SMS are sent after donating.</p>
+      <p class="hint">Test mode — no real money is charged. An acknowledgement email &amp; SMS are sent after donating.
+        <br /><b id="myCentreLine"></b></p>
 
       <div class="quick-amounts">
         <button type="button" class="chip-btn" onclick="setAmount(500)">₹500</button>
@@ -77,6 +79,10 @@
       <form id="adminDonateForm">
         <div class="donate-grid">
           <div>
+            <label for="proxyCentre">Centre</label>
+            <select id="proxyCentre" onchange="onProxyCentreChange()"></select>
+          </div>
+          <div>
             <label for="proxyUserSelect">Donor Account</label>
             <select id="proxyUserSelect" onchange="toggleCustomDonor()">
               <option value="custom">-- Custom / Unregistered Name --</option>
@@ -112,10 +118,14 @@
         <h2>Expenses (Admin Only)</h2>
         <span class="total-pill expense-pill" id="totalExpenses">Total Spent: ₹0</span>
       </div>
-      <p class="hint">Track all expenses with both an Event tag and a Type tag.</p>
+      <p class="hint">Track all expenses with a Centre, an Event tag and a Type tag.</p>
 
       <form id="expenseForm">
         <div class="donate-grid">
+          <div>
+            <label for="expenseCentre">Centre</label>
+            <select id="expenseCentre" onchange="fillEventSelect('expenseEventTag', this.value)"></select>
+          </div>
           <div>
             <label for="expenseAmount">Amount (₹)</label>
             <input type="number" id="expenseAmount" min="1" step="any" placeholder="500" required />
@@ -158,6 +168,7 @@
           <thead>
             <tr>
               <th>#</th>
+              <th>Centre</th>
               <th>Event Tag</th>
               <th>Type Tag</th>
               <th>Amount</th>
@@ -177,7 +188,7 @@
         <h2>Generate Financial Report</h2>
         <a href="/reports.html" class="nav-btn">View All Reports →</a>
       </div>
-      <p class="hint">Generates total donations and itemized expenses under each category. Viewable by admins and operators.</p>
+      <p class="hint">Generates total donations and itemized expenses for the area you choose. Members of the centres it covers can view it.</p>
 
       <form id="reportGenForm">
         <div class="donate-grid">
@@ -194,9 +205,14 @@
 
           <div id="repEventWrap">
             <label for="reportEventTag">Select Event</label>
-            <select id="reportEventTag">
+            <select id="reportEventTag" onchange="updateReportFields()">
               <option value="General">General</option>
             </select>
+          </div>
+
+          <div id="repScopeWrap">
+            <label for="reportScope">Covers</label>
+            <select id="reportScope"></select>
           </div>
 
           <div id="repYearWrap" style="display: none;">
@@ -249,10 +265,10 @@
     <!-- LEVEL 0 & 1 ONLY: Accounts Approvals -->
     <div class="section" id="dbSection" style="display: none;">
       <div class="section-head">
-        <h2>All Accounts</h2>
+        <h2>Accounts in My Area</h2>
         <a href="/admin-db.html" class="nav-btn">Full DB Control →</a>
       </div>
-      <p class="hint">Passwords stay hidden. Approve or reject pending requests below.</p>
+      <p class="hint">Passwords stay hidden. Approve or reject pending sign-ups for your centres below.</p>
       <div id="tableMsg" class="message"></div>
 
       <div class="table-wrap">
@@ -262,7 +278,8 @@
               <th>Login ID</th>
               <th>Username</th>
               <th>Email</th>
-              <th>Level</th>
+              <th>Role</th>
+              <th>Centre</th>
               <th>Status</th>
               <th>Action</th>
             </tr>
@@ -273,6 +290,7 @@
     </div>
   </div>
 
+  <script src="/access.js"></script>
   <script>
     const token = localStorage.getItem('token');
     const accessLevel = Number(localStorage.getItem('access_level'));
@@ -326,8 +344,74 @@
       document.getElementById('customExpenseTypeWrap').style.display = sel === '__custom__' ? 'block' : 'none';
     }
 
+    let allEvents = [];
+    let hier = null;
+    let adminUsers = [];
+
+    function centreName(id) {
+      const c = hier && hier.centres.find((x) => x.id === Number(id));
+      return c ? c.name : '';
+    }
+
+    function eventOptionsFor(centreId, { activeOnly = false } = {}) {
+      return `<option value="General">General</option>` + allEvents
+        .filter((ev) => ev.centre_id === Number(centreId) && (!activeOnly || !ev.is_expired))
+        .map((ev) => {
+          const t = escapeHtml(ev.title);
+          return `<option value="${t}">${t}${ev.is_expired ? ' (Ended)' : ''}</option>`;
+        }).join('');
+    }
+
+    function fillEventSelect(selectId, centreId) {
+      document.getElementById(selectId).innerHTML = eventOptionsFor(centreId);
+    }
+
+    function onProxyCentreChange() {
+      const centreId = Number(document.getElementById('proxyCentre').value);
+      fillEventSelect('proxyEventTag', centreId);
+      const sel = document.getElementById('proxyUserSelect');
+      sel.innerHTML = `<option value="custom">-- Custom / Unregistered Name --</option>` +
+        adminUsers
+          .filter((u) => u.centre_id === centreId && u.status === 'approved')
+          .map((u) => `<option value="${u.id}">#${u.login_id} — ${escapeHtml(u.username)} (${escapeHtml(u.email)})</option>`)
+          .join('');
+      toggleCustomDonor();
+    }
+
+    function fillScopeSelects() {
+      const managed = hier.centres.filter((c) => c.can_manage);
+      const centreOpts = window.Access.centreOptionsHtml(managed, { selected: managed.length ? managed[0].id : null });
+      document.getElementById('proxyCentre').innerHTML = centreOpts;
+      document.getElementById('expenseCentre').innerHTML = centreOpts;
+
+      // Report coverage: everything the admin may report on
+      const opts = [];
+      if (hier.me.is_super) opts.push(['all:', 'All centres']);
+      for (const r of hier.regions) {
+        if (r.can_manage) opts.push([`region:${r.id}`, `Region: ${r.name}`]);
+        for (const z of r.zones) {
+          if (z.can_manage) opts.push([`zone:${z.id}`, `Zone: ${z.name} (${r.name})`]);
+          for (const c of z.centres) if (c.can_manage) opts.push([`centre:${c.id}`, `Centre: ${c.name} (${z.name})`]);
+        }
+      }
+      document.getElementById('reportScope').innerHTML = opts
+        .map(([v, l]) => `<option value="${v}">${escapeHtml(l)}</option>`).join('');
+
+      const managedIds = new Set(managed.map((c) => c.id));
+      document.getElementById('reportEventTag').innerHTML = `<option value="General">General (choose area below)</option>` +
+        allEvents.filter((ev) => managedIds.has(ev.centre_id))
+          .map((ev) => `<option value="id:${ev.id}">${escapeHtml(ev.title)} — ${escapeHtml(ev.centre_name)}</option>`).join('');
+
+      onProxyCentreChange();
+      fillEventSelect('expenseEventTag', document.getElementById('expenseCentre').value);
+      updateReportFields();
+    }
+
     function updateReportFields() {
       const type = document.getElementById('reportType').value;
+      const isEvent = type === 'event';
+      const pickedEvent = document.getElementById('reportEventTag').value.startsWith('id:');
+      document.getElementById('repScopeWrap').style.display = isEvent && pickedEvent ? 'none' : 'block';
       document.getElementById('repEventWrap').style.display = type === 'event' ? 'block' : 'none';
       document.getElementById('repYearWrap').style.display = type !== 'event' ? 'block' : 'none';
       document.getElementById('repMonthWrap').style.display = type === 'monthly' ? 'block' : 'none';
@@ -344,34 +428,15 @@
         if (!res.ok) return;
 
         const data = await res.json();
+        allEvents = data.events || [];
 
-        const activeOptionsHtml = `<option value="General">General</option>` +
-          data.events
-            .filter((ev) => !ev.is_expired)
-            .map((ev) => {
-              const safeTitle = escapeHtml(ev.title);
-              return `<option value="${safeTitle}">${safeTitle}</option>`;
-            })
-            .join('');
-
-        const allOptionsHtml = `<option value="General">General</option>` +
-          data.events
-            .map((ev) => {
-              const safeTitle = escapeHtml(ev.title);
-              const label = ev.is_expired ? `${safeTitle} (Ended)` : safeTitle;
-              return `<option value="${safeTitle}">${label}</option>`;
-            })
-            .join('');
-
-        // Regular user donation form -> active events only
-        const donateSel = document.getElementById('donateEventTag');
-        if (donateSel) donateSel.innerHTML = activeOptionsHtml;
-
-        // Admin offline donations, expenses, and reports -> all events (including ended)
-        ['proxyEventTag', 'expenseEventTag', 'reportEventTag'].forEach((id) => {
-          const sel = document.getElementById(id);
-          if (sel) sel.innerHTML = allOptionsHtml;
-        });
+        // Your own donations go to your centre -> only its active events
+        document.getElementById('donateEventTag').innerHTML =
+          eventOptionsFor(data.my_centre_id, { activeOnly: true });
+        const myCentre = localStorage.getItem('centre_name');
+        document.getElementById('myCentreLine').textContent = data.my_centre_id
+          ? `Your donations go to ${myCentre || 'your centre'}.`
+          : 'Your account is not linked to a centre yet — ask an admin to set it.';
       } catch {}
     }
 
@@ -495,7 +560,10 @@
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify({ target_user_id, custom_donor_name, amount, event_tag, note }),
+          body: JSON.stringify({
+            target_user_id, custom_donor_name, amount, event_tag, note,
+            centre_id: Number(document.getElementById('proxyCentre').value),
+          }),
         });
 
         if (res.status === 401) return logout();
@@ -509,7 +577,7 @@
 
         msg.textContent = data.message;
         msg.className = 'message success';
-        e.target.reset();
+        ['customDonorName', 'proxyAmount', 'proxyNote'].forEach((id) => { document.getElementById(id).value = ''; });
         toggleCustomDonor();
         loadDonations();
       } catch {
@@ -538,7 +606,10 @@
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify({ amount, event_tag, type_tag, note }),
+          body: JSON.stringify({
+            amount, event_tag, type_tag, note,
+            centre_id: Number(document.getElementById('expenseCentre').value),
+          }),
         });
 
         if (res.status === 401) return logout();
@@ -552,7 +623,7 @@
 
         msg.textContent = data.message;
         msg.className = 'message success';
-        e.target.reset();
+        ['expenseAmount', 'customExpenseType', 'expenseNote'].forEach((id) => { document.getElementById(id).value = ''; });
         toggleCustomExpenseType();
         loadExpenses();
       } catch {
@@ -576,7 +647,7 @@
         totalEl.textContent = `Total Spent: ${formatRupees(data.total)}`;
 
         if (data.expenses.length === 0) {
-          tbody.innerHTML = `<tr><td colspan="7" class="empty-row">No expenses recorded yet.</td></tr>`;
+          tbody.innerHTML = `<tr><td colspan="8" class="empty-row">No expenses recorded yet.</td></tr>`;
           return;
         }
 
@@ -585,6 +656,7 @@
           return `
             <tr>
               <td><b>#${ex.id}</b></td>
+              <td>${escapeHtml(ex.centre_name || '—')}</td>
               <td><span class="${tagClass}">${escapeHtml(ex.event_tag)}</span></td>
               <td><span class="type-tag-badge">${escapeHtml(ex.type_tag)}</span></td>
               <td class="expense-cell">${formatRupees(ex.amount)}</td>
@@ -613,9 +685,14 @@
       msg.className = 'message';
       msg.textContent = '';
 
+      const eventChoice = document.getElementById('reportEventTag').value;
+      const [scope_type, scopeId] = document.getElementById('reportScope').value.split(':');
       const payload = {
         report_type: document.getElementById('reportType').value,
-        event_tag: document.getElementById('reportEventTag').value,
+        event_tag: eventChoice.startsWith('id:') ? undefined : eventChoice,
+        event_id: eventChoice.startsWith('id:') ? Number(eventChoice.slice(3)) : undefined,
+        scope_type,
+        scope_id: scopeId ? Number(scopeId) : null,
         year: Number(document.getElementById('reportYear').value),
         month: Number(document.getElementById('reportMonth').value),
         quarter: Number(document.getElementById('reportQuarter').value),
@@ -674,14 +751,11 @@
           return;
         }
 
-        proxySelect.innerHTML = `<option value="custom">-- Custom / Unregistered Name --</option>` +
-          data.users.map((u) =>
-            `<option value="${u.id}">#${u.login_id} — ${escapeHtml(u.username)} (${escapeHtml(u.email)})</option>`
-          ).join('');
-        toggleCustomDonor();
+        adminUsers = data.users;
+        if (hier) onProxyCentreChange();
 
         tbody.innerHTML = data.users.map((u) => {
-          const actions = u.status === 'pending'
+          const actions = u.status === 'pending' && u.can_manage
             ? `<button class="btn-approve" onclick="decideUser(${u.id}, 'approved')">Approve</button>
                <button class="btn-reject" onclick="decideUser(${u.id}, 'rejected')">Reject</button>`
             : '—';
@@ -691,7 +765,8 @@
               <td><b>#${u.login_id}</b></td>
               <td>${escapeHtml(u.username)}</td>
               <td>${escapeHtml(u.email)}</td>
-              <td>Level ${u.access_level}</td>
+              <td>${escapeHtml(u.role_label)}</td>
+              <td>${escapeHtml(u.centre_name || '—')}</td>
               <td><span class="badge ${escapeHtml(u.status)}">${escapeHtml(u.status)}</span></td>
               <td>${actions}</td>
             </tr>
@@ -717,14 +792,17 @@
       loadUsers();
     }
 
-    loadEventOptions();
+    const eventsReady = loadEventOptions();
     loadDonations();
-    if (accessLevel <= 1) {
+    if (accessLevel <= 3) {
       document.getElementById('adminDonateSection').style.display = 'block';
       document.getElementById('expensesSection').style.display = 'block';
       document.getElementById('reportGenSection').style.display = 'block';
       document.getElementById('dbSection').style.display = 'block';
-      updateReportFields();
+      Promise.all([eventsReady, window.Access.hierarchy()]).then(([, h]) => {
+        hier = h;
+        if (hier) fillScopeSelects();
+      });
       loadExpenses();
       loadUsers();
     }

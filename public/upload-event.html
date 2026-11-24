@@ -4,7 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Upload Event (Admin)</title>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="/style.css" />
+  <script src="/theme.js"></script>
 </head>
 <body>
   <header></header>
@@ -24,6 +25,11 @@
             <label for="eventDate">Event Date (Optional)</label>
             <input type="date" id="eventDate" />
           </div>
+          <div>
+            <label for="eventCentre">Centre</label>
+            <select id="eventCentre" required></select>
+            <p class="hint" style="margin: 6px 0 0;">You can publish events only for centres under your jurisdiction.</p>
+          </div>
         </div>
 
         <label style="margin-top: 20px;">Article Content Blocks</label>
@@ -41,15 +47,23 @@
     </div>
   </div>
 
+  <script src="/access.js"></script>
   <script>
     const token = localStorage.getItem('token');
     const accessLevel = Number(localStorage.getItem('access_level'));
 
     if (!token) {
       window.location.href = '/index.html';
-    } else if (accessLevel > 1) {
+    } else if (accessLevel > 3) {
       window.location.href = '/events.html';
     }
+
+    window.Access.hierarchy().then((h) => {
+      const managed = h ? h.centres.filter((c) => c.can_manage) : [];
+      document.getElementById('eventCentre').innerHTML = managed.length
+        ? window.Access.centreOptionsHtml(managed, { selected: managed.length === 1 ? managed[0].id : null, blank: managed.length > 1 ? '-- Choose a centre --' : '' })
+        : '<option value="">No centres under your jurisdiction</option>';
+    });
 
     function logout() {
       localStorage.clear();
@@ -177,7 +191,7 @@
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify({ title, event_date, blocks }),
+          body: JSON.stringify({ title, event_date, blocks, centre_id: Number(document.getElementById('eventCentre').value) || null }),
         });
 
         if (res.status === 401) return logout();

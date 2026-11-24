@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Style Centre (Admin)</title>
+  <link rel="stylesheet" href="/style.css" />
+  <script src="/theme.js"></script>
+</head>
+<body>
+  <header></header>
+
+  <div class="container" style="max-width: 1240px;">
+    <div class="section" style="margin-bottom: 20px;">
+      <div class="section-head">
+        <h2>Style Centre</h2>
+        <span class="total-pill" id="lastSaved">Loading…</span>
+      </div>
+      <p class="hint" style="margin-bottom: 0;">
+        Change the look of the whole website — colours, fonts, header, cards and backgrounds (photos or videos).
+        Changes preview on this page straight away and go live for everyone when you click <b>Save style</b>.
+      </p>
+    </div>
+
+    <div class="style-layout">
+      <div id="styleForm">
+        <!-- Branding -->
+        <div class="section">
+          <h3>Branding</h3>
+          <div class="form-grid">
+            <div>
+              <label for="siteName">Website name (shown in the header)</label>
+              <input type="text" id="siteName" data-path="siteName" maxlength="40" />
+            </div>
+            <div>
+              <label>Logo (optional)</label>
+              <div style="display:flex; gap:8px; align-items:center;">
+                <label class="drop-zone" style="margin:0; flex:1; padding:10px;">
+                  <span id="logoLabel">Upload logo…</span>
+                  <input type="file" id="logoInput" accept="image/png,image/jpeg,image/gif,image/webp" />
+                </label>
+                <button type="button" class="btn-soft" id="removeLogoBtn">Remove</button>
+              </div>
+              <div class="upload-progress" id="prog-logo" hidden><span></span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Colours -->
+        <div class="section">
+          <h3>Colours</h3>
+          <p class="hint" style="margin: 4px 0 0;">Pick a ready-made palette or set each colour yourself.</p>
+          <div class="preset-row" id="presetRow"></div>
+          <div class="color-grid" style="margin-top: 10px;">
+            <div><label>Main colour</label><input type="color" data-path="colors.primary" /></div>
+            <div><label>Deep shade</label><input type="color" data-path="colors.primaryDark" /></div>
+            <div><label>Accent</label><input type="color" data-path="colors.accent" /></div>
+            <div><label>Text</label><input type="color" data-path="colors.ink" /></div>
+            <div><label>Page base colour</label><input type="color" data-path="colors.canvas" /></div>
+          </div>
+        </div>
+
+        <!-- Fonts & shapes -->
+        <div class="section">
+          <h3>Fonts, header &amp; cards</h3>
+          <div class="form-grid">
+            <div>
+              <label>Body font</label>
+              <select data-path="fontBody" id="fontBody"></select>
+            </div>
+            <div>
+              <label>Heading font</label>
+              <select data-path="fontHeading" id="fontHeading"></select>
+            </div>
+            <div>
+              <label>Header style</label>
+              <select data-path="headerStyle">
+                <option value="gradient">Gradient (main → accent)</option>
+                <option value="solid">Solid main colour</option>
+                <option value="glass">Frosted glass</option>
+                <option value="dark">Dark</option>
+              </select>
+            </div>
+            <div>
+              <label>Card style</label>
+              <select data-path="cardStyle">
+                <option value="solid">Solid</option>
+                <option value="glass">Frosted glass (shows the background through)</option>
+              </select>
+            </div>
+            <div>
+              <label>Card opacity</label>
+              <div class="range-row">
+                <input type="range" min="40" max="100" data-path="cardOpacity" data-number="1" />
+                <output data-for="cardOpacity"></output>
+              </div>
+            </div>
+            <div>
+              <label>Corner roundness</label>
+              <div class="range-row">
+                <input type="range" min="0" max="28" data-path="radius" data-number="1" />
+                <output data-for="radius"></output>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Backgrounds -->
+        <div class="section">
+          <h3>Website background</h3>
+          <p class="hint" style="margin: 4px 0 0;">Shown behind every page, unless a page has its own background below.</p>
+          <div id="siteBgEditor"></div>
+        </div>
+
+        <div class="section">
+          <div class="section-head">
+            <h3>Page backgrounds</h3>
+          </div>
+          <p class="hint" style="margin: 4px 0 0;">Give individual pages their own background photo, video or colour.</p>
+          <div style="display:flex; gap:8px; margin-top: 10px;">
+            <select id="newPageBg"></select>
+            <button type="button" class="btn-inline" id="addPageBgBtn" style="white-space: nowrap;">+ Add</button>
+          </div>
+          <div class="page-bg-list" id="pageBgList"></div>
+          <div id="pageBgEditor"></div>
+        </div>
+
+        <!-- Advanced -->
+        <div class="section">
+          <h3>Custom CSS (advanced)</h3>
+          <p class="hint" style="margin: 4px 0 0;">Optional. Extra CSS rules applied to every page.</p>
+          <textarea data-path="customCss" rows="5" spellcheck="false"
+            placeholder=".event-title { letter-spacing: 0; }" style="font-family: ui-monospace, Menlo, monospace; font-size: 0.85rem;"></textarea>
+        </div>
+
+        <div class="sticky-save">
+          <button type="button" id="saveStyleBtn">Save style</button>
+          <button type="button" class="btn-soft" id="discardBtn">Discard changes</button>
+          <button type="button" class="btn-soft" id="resetBtn">Reset to original look</button>
+          <div id="styleMsg" class="message"></div>
+        </div>
+      </div>
+
+      <aside class="style-preview">
+        <div class="section" style="padding: 18px;">
+          <h3 style="margin-bottom: 4px;">Preview</h3>
+          <p class="hint" style="margin-bottom: 10px;" id="previewLabel">Website background</p>
+          <div class="preview-frame" id="previewFrame">
+            <div class="bg-holder" id="previewBg"></div>
+            <div class="preview-header" id="previewHeader"></div>
+            <div class="preview-body">
+              <div class="preview-card" id="previewCard">
+                <h4>Annual Community Meet</h4>
+                <p>This is how cards, text and buttons will look across the site.</p>
+                <span class="pv-btn" id="previewBtn">Donate</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <script src="/uploads.js"></script>
+  <script>
+    const token = localStorage.getItem('token');
+    const accessLevel = Number(localStorage.getItem('access_level'));
+    if (!token) window.location.href = '/index.html';
+    else if (accessLevel !== 0) window.location.href = '/'; // site-wide styling: Super Admin only
+
+    const PAGE_NAMES = {
+      '/': 'About (home)',
+      '/index.html': 'Sign in',
+      '/signup.html': 'Sign up',
+      '/dashboard.html': 'Dashboard',
+      '/events.html': 'Events',
+      '/gallery.html': 'Gallery',
+      '/people.html': 'People Lookup',
+      '/funds.html': 'Funds',
+      '/reports.html': 'Reports',
+      '/major-donations.html': 'Major Donations',
+      '/houses.html': 'Houses & Donor Lookup',
+      '/admin-db.html': 'Database Control',
+      '/upload-event.html': 'Upload Event',
+      '/style-centre.html': 'Style Centre',
+    };
+
+    const PRESETS = [
+      { name: 'Saffron Red', colors: { primary: '#b91c1c', primaryDark: '#7f1d1d', accent: '#ea580c', ink: '#181412', canvas: '#f2ece7' } },
+      { name: 'Royal Blue', colors: { primary: '#1d4ed8', primaryDark: '#1e3a8a', accent: '#0ea5e9', ink: '#0f172a', canvas: '#eef2f8' } },
+      { name: 'Forest', colors: { primary: '#15803d', primaryDark: '#14532d', accent: '#65a30d', ink: '#132017', canvas: '#eef3ec' } },
+      { name: 'Temple Gold', colors: { primary: '#b45309', primaryDark: '#78350f', accent: '#d97706', ink: '#1c1408', canvas: '#f6f0e3' } },
+      { name: 'Plum', colors: { primary: '#7e22ce', primaryDark: '#4c1d95', accent: '#db2777', ink: '#1b1324', canvas: '#f3eef7' } },
+      { name: 'Teal', colors: { primary: '#0f766e', primaryDark: '#134e4a', accent: '#0891b2', ink: '#0f1d1c', canvas: '#ebf3f2' } },
+      { name: 'Charcoal', colors: { primary: '#374151', primaryDark: '#111827', accent: '#f59e0b', ink: '#111827', canvas: '#eff0f2' } },
+    ];
+
+    const MAX_IMAGE_MB = 15;
+    const MAX_VIDEO_MB = 250;
+
+    let savedTheme = null;
+    let draft = null;
+    let fonts = [];
+    let editingPage = null; // which page background is open in the editor
+    let dirty = false;
+
+    function esc(str) {
+      return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function clone(o) {
+      return JSON.parse(JSON.stringify(o));
+    }
+
+    function getPath(obj, path) {
+      return path.split('.').reduce((cur, k) => (cur == null ? undefined : cur[k]), obj);
+    }
+
+    function setPath(obj, path, value) {
+      const parts = path.split('.');
+      let cur = obj;
+      for (let i = 0; i < parts.length - 1; i++) {
+        if (cur[parts[i]] == null) cur[parts[i]] = {};
+        cur = cur[parts[i]];
+      }
+      cur[parts[parts.length - 1]] = value;
+    }
+
+    function defaultBg(type) {
+      return {
+        type, color: '#7f1d1d', color2: '#ea580c', angle: 135,
+        url: '', poster: '', overlay: type === 'image' || type === 'video' ? 35 : 0,
+        overlayColor: '#000000', blur: 0, fixed: false,
+      };
+    }
+
+    function showMsg(text, kind) {
+      const msg = document.getElementById('styleMsg');
+      msg.textContent = text;
+      msg.className = `message ${kind || ''}`;
+    }
+
+    function markDirty() {
+      dirty = true;
+      showMsg('Unsaved changes — preview only until you click Save style.', '');
+    }
+
+    // ---------- Background editor (shared by site + page backgrounds) ----------
+
+    function bgEditorHtml(key, bg, { allowDefault }) {
+      const t = bg.type;
+      const opts = [
+        ...(allowDefault ? [['default', key === 'site' ? 'Built-in soft gradient' : 'Same as website background']] : []),
+        ['color', 'Solid colour'], ['gradient', 'Gradient'], ['image', 'Photo'], ['video', 'Video (silent loop)'],
+      ];
+      const f = (field) => `data-bg="${esc(key)}" data-field="${field}"`;
+
+      let html = `<label>Background type</label>
+        <select ${f('type')}>${opts.map(([v, l]) => `<option value="${v}" ${t === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+
+      if (t === 'color') {
+        html += `<label>Colour</label><input type="color" value="${esc(bg.color)}" ${f('color')} />`;
+      }
+      if (t === 'gradient') {
+        html += `<div class="form-grid">
+            <div><label>From</label><input type="color" value="${esc(bg.color)}" ${f('color')} /></div>
+            <div><label>To</label><input type="color" value="${esc(bg.color2)}" ${f('color2')} /></div>
+          </div>
+          <label>Direction</label>
+          <div class="range-row"><input type="range" min="0" max="360" value="${Number(bg.angle)}" ${f('angle')} /><output>${Number(bg.angle)}°</output></div>`;
+      }
+      if (t === 'image' || t === 'video') {
+        const accept = t === 'image' ? window.MEDIA_ACCEPT.images : window.MEDIA_ACCEPT.videos;
+        html += `
+          <label>${t === 'image' ? 'Photo' : 'Video'}</label>
+          <label class="drop-zone" style="margin-top:0;">
+            ${bg.url ? `Replace ${t === 'image' ? 'photo' : 'video'}…` : `Choose a ${t === 'image' ? 'photo' : 'video'}…`}
+            <input type="file" accept="${accept}" data-upload="url" data-bg="${esc(key)}" />
+          </label>
+          <div class="upload-progress" data-prog="${esc(key)}-url" hidden><span></span></div>
+          ${bg.url ? `<p class="hint" style="margin:6px 0 0;">Current: ${esc(bg.url)}</p>` : ''}`;
+        if (t === 'video') {
+          html += `
+            <label>Poster photo (optional, shown while the video loads)</label>
+            <label class="drop-zone" style="margin-top:0;">
+              ${bg.poster ? 'Replace poster…' : 'Choose a poster photo…'}
+              <input type="file" accept="${window.MEDIA_ACCEPT.images}" data-upload="poster" data-bg="${esc(key)}" />
+            </label>
+            <div class="upload-progress" data-prog="${esc(key)}-poster" hidden><span></span></div>`;
+        }
+        html += `
+          <div class="form-grid">
+            <div>
+              <label>Darken / tint overlay</label>
+              <div class="range-row"><input type="range" min="0" max="90" value="${Number(bg.overlay)}" ${f('overlay')} /><output>${Number(bg.overlay)}%</output></div>
+            </div>
+            <div><label>Overlay colour</label><input type="color" value="${esc(bg.overlayColor)}" ${f('overlayColor')} /></div>
+            <div>
+              <label>Blur</label>
+              <div class="range-row"><input type="range" min="0" max="20" value="${Number(bg.blur)}" ${f('blur')} /><output>${Number(bg.blur)}px</output></div>
+            </div>
+          </div>`;
+      }
+      return html;
+    }
+
+    function getBg(key) {
+      if (key === 'site') return draft.background;
+      return draft.pageBackgrounds[key];
+    }
+
+    function setBg(key, bg) {
+      if (key === 'site') draft.background = bg;
+      else draft.pageBackgrounds[key] = bg;
+    }
+
+    function renderBgEditors() {
+      draft.background = { ...defaultBg(draft.background.type || 'default'), ...draft.background };
+      document.getElementById('siteBgEditor').innerHTML = bgEditorHtml('site', draft.background, { allowDefault: true });
+
+      const pages = Object.keys(draft.pageBackgrounds);
+      document.getElementById('pageBgList').innerHTML = pages.length
+        ? pages.map((p) => `
+            <div class="page-bg-item">
+              <span>${esc(PAGE_NAMES[p] || p)} <span class="hint" style="margin:0;">· ${esc(draft.pageBackgrounds[p].type)}</span></span>
+              <span style="display:flex; gap:6px;">
+                <button type="button" class="mini-btn" data-page-edit="${esc(p)}">${editingPage === p ? 'Editing' : 'Edit'}</button>
+                <button type="button" class="mini-btn danger" data-page-del="${esc(p)}">✕</button>
+              </span>
+            </div>`).join('')
+        : '<p class="hint" style="margin:0;">No page-specific backgrounds.</p>';
+
+      const pageSelect = document.getElementById('newPageBg');
+      pageSelect.innerHTML = Object.entries(PAGE_NAMES)
+        .filter(([p]) => !draft.pageBackgrounds[p])
+        .map(([p, name]) => `<option value="${esc(p)}">${esc(name)}</option>`)
+        .join('');
+
+      const pageEditor = document.getElementById('pageBgEditor');
+      if (editingPage && draft.pageBackgrounds[editingPage]) {
+        const bg = draft.pageBackgrounds[editingPage];
+        draft.pageBackgrounds[editingPage] = { ...defaultBg(bg.type), ...bg };
+        pageEditor.innerHTML = `
+          <div class="edit-box" style="margin-top:12px;">
+            <h3>${esc(PAGE_NAMES[editingPage] || editingPage)} background</h3>
+            ${bgEditorHtml(editingPage, draft.pageBackgrounds[editingPage], { allowDefault: false })}
+          </div>`;
+      } else {
+        pageEditor.innerHTML = '';
+      }
+    }
+
+    // ---------- Form <-> draft ----------
+
+    function fillForm() {
+      document.querySelectorAll('#styleForm [data-path]').forEach((el) => {
+        const val = getPath(draft, el.dataset.path);
+        if (el.type === 'checkbox') el.checked = Boolean(val);
+        else el.value = val ?? '';
+      });
+      document.querySelectorAll('output[data-for]').forEach((out) => {
+        const v = getPath(draft, out.dataset.for);
+        out.textContent = out.dataset.for === 'cardOpacity' ? `${v}%` : `${v}px`;
+      });
+      document.getElementById('logoLabel').textContent = draft.logoUrl ? 'Replace logo…' : 'Upload logo…';
+      renderBgEditors();
+    }
+
+    function renderPreview() {
+      const key = editingPage || 'site';
+      const bg = editingPage ? draft.pageBackgrounds[editingPage] : draft.background;
+      document.getElementById('previewLabel').textContent = editingPage
+        ? `${PAGE_NAMES[editingPage] || editingPage} background`
+        : 'Website background';
+
+      const holder = document.getElementById('previewBg');
+      const sig = JSON.stringify([key, bg]);
+      if (holder.dataset.sig !== sig) {
+        holder.dataset.sig = sig;
+        if (!bg || bg.type === 'default') {
+          holder.innerHTML = '';
+          holder.style.background = `radial-gradient(ellipse 80% 45% at 50% -10%, ${window.SiteTheme.hexToRgba(draft.colors.accent, 0.18)}, transparent 65%), ${draft.colors.canvas}`;
+        } else {
+          holder.style.background = '';
+          window.SiteTheme.renderBackground(holder, bg, { fixedLayer: true });
+        }
+      }
+
+      const c = draft.colors;
+      const header = document.getElementById('previewHeader');
+      const grad = `linear-gradient(135deg, ${c.primaryDark} 0%, ${c.primary} 42%, ${c.accent} 100%)`;
+      header.style.background =
+        draft.headerStyle === 'solid' ? c.primary
+          : draft.headerStyle === 'dark' ? '#15110f'
+          : draft.headerStyle === 'glass' ? window.SiteTheme.hexToRgba(c.primaryDark, 0.62)
+          : grad;
+      header.style.backdropFilter = draft.headerStyle === 'glass' ? 'blur(12px)' : '';
+      header.style.fontFamily = `'${draft.fontHeading}', sans-serif`;
+      header.innerHTML = `${draft.logoUrl ? `<img src="${esc(draft.logoUrl)}" alt="" />` : ''}<span>${esc(draft.siteName || 'GSB ONLINE')}</span>`;
+
+      const card = document.getElementById('previewCard');
+      const a = Number(draft.cardOpacity) / 100;
+      card.style.background = `rgba(255,255,255,${draft.cardStyle === 'glass' ? Math.min(a, 0.95) : a})`;
+      card.style.backdropFilter = draft.cardStyle === 'glass' ? 'blur(12px)' : '';
+      card.style.borderRadius = `${draft.radius}px`;
+      card.style.color = c.ink;
+      card.style.fontFamily = `'${draft.fontBody}', sans-serif`;
+      card.querySelector('h4').style.fontFamily = `'${draft.fontHeading}', sans-serif`;
+      const btn = document.getElementById('previewBtn');
+      btn.style.background = grad;
+      btn.style.borderRadius = `${Math.round(draft.radius * 0.5)}px`;
+    }
+
+    function livePreview() {
+      // Preview the draft on this whole page as well (not saved yet)
+      window.SiteTheme.apply(draft);
+      renderPreview();
+    }
+
+    // ---------- Events ----------
+
+    const form = document.getElementById('styleForm');
+
+    form.addEventListener('input', (e) => {
+      const el = e.target;
+      if (el.type === 'file') return;
+
+      if (el.dataset.path) {
+        let v = el.type === 'checkbox' ? el.checked : el.value;
+        if (el.dataset.number) v = Number(v);
+        setPath(draft, el.dataset.path, v);
+        const out = document.querySelector(`output[data-for="${el.dataset.path}"]`);
+        if (out) out.textContent = el.dataset.path === 'cardOpacity' ? `${v}%` : `${v}px`;
+      } else if (el.dataset.bg && el.dataset.field && el.dataset.field !== 'type') {
+        const bg = getBg(el.dataset.bg);
+        let v = el.value;
+        if (el.type === 'range') {
+          v = Number(v);
+          const out = el.parentElement.querySelector('output');
+          if (out) out.textContent = out.textContent.replace(/^\d+/, String(v));
+        }
+        bg[el.dataset.field] = v;
+      } else {
+        return;
+      }
+      markDirty();
+      livePreview();
+    });
+
+    form.addEventListener('change', async (e) => {
+      const el = e.target;
+      if (el.dataset.bg && el.dataset.field === 'type') {
+        const key = el.dataset.bg;
+        const old = getBg(key) || {};
+        const type = el.value;
+        const next = { ...defaultBg(type), ...old, type };
+        const urlIsVideo = /\.(mp4|webm|mov|ogv)(\?|$)/i.test(next.url || '');
+        if ((type === 'image' || type === 'video') && next.url && urlIsVideo !== (type === 'video')) next.url = '';
+        if ((type === 'image' || type === 'video') && !old.overlay) next.overlay = 35;
+        setBg(key, next);
+        markDirty();
+        renderBgEditors();
+        livePreview();
+      }
+
+      if (el.type === 'file' && el.dataset.upload) {
+        await uploadForBg(el);
+      }
+    });
+
+    form.addEventListener('click', (e) => {
+      const edit = e.target.closest('[data-page-edit]');
+      const del = e.target.closest('[data-page-del]');
+      if (edit) {
+        editingPage = editingPage === edit.dataset.pageEdit ? null : edit.dataset.pageEdit;
+        renderBgEditors();
+        renderPreview();
+      }
+      if (del) {
+        delete draft.pageBackgrounds[del.dataset.pageDel];
+        if (editingPage === del.dataset.pageDel) editingPage = null;
+        markDirty();
+        renderBgEditors();
+        livePreview();
+      }
+    });
+
+    document.getElementById('addPageBgBtn').addEventListener('click', () => {
+      const page = document.getElementById('newPageBg').value;
+      if (!page) return;
+      draft.pageBackgrounds[page] = defaultBg('gradient');
+      editingPage = page;
+      markDirty();
+      renderBgEditors();
+      livePreview();
+    });
+
+    function checkFile(file) {
+      const isVideo = file.type.startsWith('video/');
+      const max = isVideo ? MAX_VIDEO_MB : MAX_IMAGE_MB;
+      if (file.size > max * 1024 * 1024) {
+        alert(`That file is too large (max ${max} MB).`);
+        return false;
+      }
+      return true;
+    }
+
+    function setProg(selector, pct) {
+      const bar = document.querySelector(selector);
+      if (!bar) return;
+      bar.hidden = pct === null;
+      bar.querySelector('span').style.width = `${pct || 0}%`;
+    }
+
+    async function uploadForBg(input) {
+      const file = input.files[0];
+      input.value = '';
+      if (!file || !checkFile(file)) return;
+      const key = input.dataset.bg;
+      const which = input.dataset.upload; // url | poster
+      const progSel = `[data-prog="${CSS.escape(`${key}-${which}`)}"]`;
+      showMsg('Uploading…', '');
+      try {
+        const result = await window.uploadMedia(file, { onProgress: (p) => setProg(progSel, p) });
+        const bg = getBg(key);
+        if (which === 'url') {
+          bg.url = result.url;
+          bg.type = result.media_type === 'video' ? 'video' : 'image';
+        } else {
+          bg.poster = result.url;
+        }
+        markDirty();
+        renderBgEditors();
+        livePreview();
+      } catch (err) {
+        showMsg(err.message, 'error');
+      } finally {
+        setProg(progSel, null);
+      }
+    }
+
+    document.getElementById('logoInput').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      e.target.value = '';
+      if (!file || !checkFile(file)) return;
+      try {
+        const result = await window.uploadMedia(file, { onProgress: (p) => setProg('#prog-logo', p) });
+        draft.logoUrl = result.url;
+        markDirty();
+        fillForm();
+        livePreview();
+      } catch (err) {
+        showMsg(err.message, 'error');
+      } finally {
+        setProg('#prog-logo', null);
+      }
+    });
+
+    document.getElementById('removeLogoBtn').addEventListener('click', () => {
+      draft.logoUrl = '';
+      markDirty();
+      fillForm();
+      livePreview();
+    });
+
+    function renderPresets() {
+      document.getElementById('presetRow').innerHTML = PRESETS.map((p, i) => `
+        <button type="button" class="preset-btn" data-preset="${i}">
+          <span class="preset-swatch" style="background: linear-gradient(135deg, ${p.colors.primaryDark}, ${p.colors.primary} 50%, ${p.colors.accent});"></span>
+          ${esc(p.name)}
+        </button>`).join('');
+    }
+
+    document.getElementById('presetRow').addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-preset]');
+      if (!btn) return;
+      draft.colors = { ...PRESETS[Number(btn.dataset.preset)].colors };
+      markDirty();
+      fillForm();
+      livePreview();
+    });
+
+    async function save() {
+      const btn = document.getElementById('saveStyleBtn');
+      btn.disabled = true;
+      showMsg('Saving…', '');
+      try {
+        const res = await fetch('/api/theme', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ theme: draft }),
+        });
+        if (res.status === 401) {
+          showMsg('Your session expired — sign in again (your changes are still on this page).', 'error');
+          return;
+        }
+        const data = await res.json();
+        if (!res.ok) {
+          showMsg(data.error || 'Could not save', 'error');
+          return;
+        }
+        savedTheme = data.theme;
+        draft = clone(savedTheme);
+        dirty = false;
+        window.SiteTheme.apply(savedTheme, { persist: true });
+        fillForm();
+        renderPreview();
+        document.getElementById('lastSaved').textContent = 'Saved just now';
+        showMsg(data.message || 'Saved.', 'success');
+      } catch {
+        showMsg('Could not connect to server.', 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    document.getElementById('saveStyleBtn').addEventListener('click', save);
+
+    document.getElementById('discardBtn').addEventListener('click', () => {
+      if (!dirty) return;
+      draft = clone(savedTheme);
+      editingPage = null;
+      dirty = false;
+      fillForm();
+      livePreview();
+      showMsg('Changes discarded.', '');
+    });
+
+    document.getElementById('resetBtn').addEventListener('click', async () => {
+      if (!confirm('Reset the whole website back to the original look? This removes all custom colours, fonts and backgrounds.')) return;
+      const res = await fetch('/api/theme', { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showMsg(data.error || 'Could not reset', 'error');
+        return;
+      }
+      savedTheme = data.theme;
+      draft = clone(savedTheme);
+      editingPage = null;
+      dirty = false;
+      window.SiteTheme.apply(savedTheme, { persist: true });
+      fillForm();
+      renderPreview();
+      showMsg(data.message, 'success');
+    });
+
+    window.addEventListener('beforeunload', (e) => {
+      if (dirty) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    });
+
+    async function load() {
+      try {
+        const res = await fetch('/api/theme', { cache: 'no-store' });
+        const data = await res.json();
+        savedTheme = data.theme;
+        fonts = data.fonts || [];
+        draft = clone(savedTheme);
+        ['fontBody', 'fontHeading'].forEach((id) => {
+          document.getElementById(id).innerHTML = fonts.map((f) => `<option value="${esc(f)}">${esc(f)}</option>`).join('');
+        });
+        document.getElementById('lastSaved').textContent = data.updated_at
+          ? `Last saved ${new Date(String(data.updated_at).replace(' ', 'T') + 'Z').toLocaleString('en-IN')}`
+          : 'Original look';
+        renderPresets();
+        fillForm();
+        renderPreview();
+      } catch {
+        showMsg('Could not load the current style.', 'error');
+      }
+    }
+
+    load();
+  </script>
+  <script src="/nav.js"></script>
+</body>
+</html>

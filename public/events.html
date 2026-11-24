@@ -4,7 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Events</title>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="/style.css" />
+  <script src="/theme.js"></script>
 </head>
 <body>
   <header></header>
@@ -25,12 +26,18 @@
         <span class="total-pill" id="eventCount">0 Events</span>
       </div>
       <p class="hint" style="margin-bottom: 0;">Latest announcements, stories, photos, and funds raised per event.</p>
+      <div style="display:flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px;">
+        <label for="centreFilter" style="margin: 0;">Show events for</label>
+        <select id="centreFilter" style="max-width: 320px;"></select>
+      </div>
       <div id="eventsMsg" class="message"></div>
     </div>
 
     <div id="eventsFeed"></div>
   </div>
 
+  <script src="/uploads.js"></script>
+  <script src="/lightbox.js"></script>
   <script>
     const token = localStorage.getItem('token');
     const accessLevel = Number(localStorage.getItem('access_level'));
@@ -65,6 +72,131 @@
         year: 'numeric',
       });
     }
+
+    function currentUserId() {
+      try {
+        const payload = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+        return Number(JSON.parse(atob(payload)).id);
+      } catch {
+        return null;
+      }
+    }
+    const myUserId = currentUserId();
+    let eventsById = new Map();
+    let lastData = null;
+    let centreFilter = 'mine';
+
+    function renderAlbum(ev) {
+      const photos = ev.photos || [];
+      const thumbs = photos.map((p, idx) => {
+        const canDelete = ev.can_manage || p.uploaded_by_id === myUserId;
+        return `
+          <div class="album-thumb" data-event="${ev.id}" data-idx="${idx}" tabindex="0" role="button"
+               aria-label="${escapeHtml(p.caption || 'Event photo')}" title="${escapeHtml([p.caption, 'Added by ' + p.uploaded_by].filter(Boolean).join(' · '))}">
+            <img src="${escapeHtml(p.url)}" alt="${escapeHtml(p.caption || 'Event photo')}" loading="lazy" />
+            ${canDelete ? `<button type="button" class="album-del" data-del-photo="${p.id}" data-event="${ev.id}" aria-label="Remove photo">✕</button>` : ''}
+          </div>`;
+      }).join('');
+
+      return `
+        <div class="event-album">
+          <div class="event-album-head">
+            <h3>Photos ${photos.length ? `<span class="hint" style="font-weight:600;">(${photos.length})</span>` : ''}</h3>
+            <label class="nav-btn" style="margin:0; cursor:pointer;">
+              + Add photos
+              <input type="file" multiple hidden accept="image/png,image/jpeg,image/gif,image/webp" data-add-photos="${ev.id}" />
+            </label>
+          </div>
+          <div class="upload-progress" id="album-prog-${ev.id}" hidden><span></span></div>
+          <div class="message" id="album-msg-${ev.id}"></div>
+          ${photos.length
+            ? `<div class="album-grid">${thumbs}</div>`
+            : '<p class="hint" style="margin:0;">No photos yet — be the first to add some.</p>'}
+        </div>`;
+    }
+
+    async function addEventPhotos(eventId, fileList) {
+      const files = Array.from(fileList).filter((f) => /^image\/(png|jpe?g|gif|webp)$/.test(f.type));
+      const msg = document.getElementById(`album-msg-${eventId}`);
+      const bar = document.getElementById(`album-prog-${eventId}`);
+      msg.className = 'message';
+      if (!files.length) {
+        msg.textContent = 'Please choose JPG, PNG, WEBP or GIF photos.';
+        msg.className = 'message error';
+        return;
+      }
+      const tooBig = files.find((f) => f.size > 10 * 1024 * 1024);
+      if (tooBig) {
+        msg.textContent = `"${tooBig.name}" is larger than 10 MB.`;
+        msg.className = 'message error';
+        return;
+      }
+
+      bar.hidden = false;
+      const uploaded = [];
+      try {
+        for (let i = 0; i < files.length; i++) {
+          msg.textContent = `Uploading ${i + 1} of ${files.length}…`;
+          msg.className = 'message success';
+          const r = await window.uploadMedia(files[i], {
+            onProgress: (pct) => { bar.querySelector('span').style.width = `${Math.round(((i + pct / 100) / files.length) * 100)}%`; },
+          });
+          uploaded.push({ url: r.url, caption: '' });
+        }
+        const res = await fetch(`/api/events/${eventId}/photos`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ photos: uploaded }),
+        });
+        if (res.status === 401) return logout();
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not add photos');
+        loadEvents();
+      } catch (err) {
+        bar.hidden = true;
+        msg.textContent = err.message;
+        msg.className = 'message error';
+      }
+    }
+
+    async function deleteEventPhoto(eventId, photoId) {
+      if (!confirm('Remove this photo?')) return;
+      const res = await fetch(`/api/events/${eventId}/photos/${photoId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) return logout();
+      loadEvents();
+    }
+
+    document.getElementById('eventsFeed').addEventListener('change', (e) => {
+      const input = e.target.closest('[data-add-photos]');
+      if (!input) return;
+      addEventPhotos(Number(input.dataset.addPhotos), input.files);
+      input.value = '';
+    });
+
+    document.getElementById('eventsFeed').addEventListener('click', (e) => {
+      const del = e.target.closest('[data-del-photo]');
+      if (del) {
+        e.stopPropagation();
+        deleteEventPhoto(Number(del.dataset.event), Number(del.dataset.delPhoto));
+        return;
+      }
+      const thumb = e.target.closest('.album-thumb');
+      if (thumb) {
+        const ev = eventsById.get(Number(thumb.dataset.event));
+        const list = (ev.photos || []).map((p) => ({ type: 'image', url: p.url, caption: p.caption }));
+        window.openLightbox(list, Number(thumb.dataset.idx));
+      }
+    });
+
+    document.getElementById('eventsFeed').addEventListener('keydown', (e) => {
+      if ((e.key === 'Enter' || e.key === ' ') && e.target.classList.contains('album-thumb')) {
+        e.preventDefault();
+        e.target.click();
+      }
+    });
 
     function renderBlocks(blocks) {
       return blocks.map((b) => {
@@ -116,28 +248,53 @@
         subtotalEl.textContent = formatRupees(totalAll);
         subtotalMeta.textContent = `General Donations: ${formatRupees(generalFund)}  ·  Event Donations: ${formatRupees(totalAll - generalFund)}`;
 
-        countEl.textContent = `${data.count} ${data.count === 1 ? 'Event' : 'Events'}`;
+        eventsById = new Map(data.events.map((ev) => [ev.id, ev]));
+        lastData = data;
 
-        if (data.events.length === 0) {
+        // Centre filter: my centre / all / any centre that has events
+        const sel = document.getElementById('centreFilter');
+        const centres = new Map();
+        for (const ev of data.events) if (ev.centre_id) centres.set(ev.centre_id, ev);
+        if (!data.my_centre_id && centreFilter === 'mine') centreFilter = 'all';
+        sel.innerHTML =
+          (data.my_centre_id ? `<option value="mine">My centre</option>` : '') +
+          `<option value="all">All centres</option>` +
+          Array.from(centres.values())
+            .sort((a, b) => a.centre_name.localeCompare(b.centre_name))
+            .map((ev) => `<option value="${ev.centre_id}">${escapeHtml(ev.centre_name)} (${escapeHtml(ev.zone_name)})</option>`)
+            .join('');
+        sel.value = centreFilter;
+        if (sel.value !== centreFilter) { centreFilter = 'all'; sel.value = 'all'; }
+
+        const visible = data.events.filter((ev) =>
+          centreFilter === 'all' ? true
+            : centreFilter === 'mine' ? ev.is_my_centre
+            : String(ev.centre_id) === String(centreFilter));
+        countEl.textContent = `${visible.length} ${visible.length === 1 ? 'Event' : 'Events'}`;
+
+        if (visible.length === 0) {
           feed.innerHTML = `
             <div class="section welcome-box">
               <h2>No Events Yet!</h2>
               <p class="hint" style="margin-bottom: 0;">
-                ${accessLevel <= 1
-                  ? 'Open the ⋮ menu above and select "+ Upload Event" to publish the first article.'
-                  : 'Check back soon for upcoming events and stories.'}
+                ${accessLevel <= 3
+                  ? 'Open the ⋮ menu above and select "+ Upload Event" to publish one.'
+                  : (centreFilter === 'mine' ? 'Your centre has no events yet — choose “All centres” above to see others.' : 'Check back soon for upcoming events and stories.')}
               </p>
             </div>
           `;
           return;
         }
 
-        feed.innerHTML = data.events.map((ev) => {
+        feed.innerHTML = visible.map((ev) => {
           const eventDateTag = ev.event_date
             ? `<span class="meta-tag date-tag">Event Date: ${escapeHtml(ev.event_date)}</span>`
             : '';
-          const deleteBtn = accessLevel <= 1
+          const deleteBtn = ev.can_manage
             ? `<button class="btn-reject" onclick="deleteEvent(${ev.id})">Delete</button>`
+            : '';
+          const centreTag = ev.centre_name
+            ? `<span class="meta-tag" style="font-weight:700;">📍 ${escapeHtml(ev.centre_name)} · ${escapeHtml(ev.zone_name)}</span>`
             : '';
 
           return `
@@ -146,6 +303,7 @@
                 <div>
                   <h2 class="event-title">${escapeHtml(ev.title)}</h2>
                   <div class="event-meta">
+                    ${centreTag}
                     <span class="meta-tag fund-tag">Total Fund: ${formatRupees(ev.total_fund)}</span>
                     <span class="meta-tag">By ${escapeHtml(ev.author)}</span>
                     ${eventDateTag}
@@ -157,6 +315,7 @@
               <div class="article-body">
                 ${renderBlocks(ev.blocks || [])}
               </div>
+              ${renderAlbum(ev)}
             </article>
           `;
         }).join('');
@@ -177,6 +336,11 @@
       if (res.status === 401) return logout();
       loadEvents();
     }
+
+    document.getElementById('centreFilter').addEventListener('change', (e) => {
+      centreFilter = e.target.value;
+      loadEvents();
+    });
 
     loadEvents();
   </script>

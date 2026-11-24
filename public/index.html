@@ -4,7 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Sign In</title>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="/style.css" />
+  <script src="/theme.js"></script>
 </head>
 <body class="center-page">
   <div class="card">
@@ -34,8 +35,15 @@
   </div>
 
   <script>
-    if (localStorage.getItem('token')) {
-      window.location.href = '/dashboard.html';
+    if (localStorage.getItem('token') && localStorage.getItem('auth_v') === '2') {
+      window.location.href = '/';
+    } else if (localStorage.getItem('token')) {
+      localStorage.clear();
+    }
+    if (new URLSearchParams(location.search).get('relogin')) {
+      const m = document.getElementById('loginMsg');
+      m.textContent = 'The site has been updated with centres and new admin roles — please sign in again.';
+      m.className = 'message success';
     }
 
     function togglePassword(inputId, btn) {
@@ -74,7 +82,11 @@
         localStorage.setItem('access_level', data.access_level);
         localStorage.setItem('login_id', data.login_id);
         localStorage.setItem('username', data.username);
-        window.location.href = '/dashboard.html';
+        localStorage.setItem('role_label', data.role_label || '');
+        if (data.centre_id) localStorage.setItem('centre_id', data.centre_id);
+        if (data.centre) localStorage.setItem('centre_name', data.centre.name);
+        localStorage.setItem('auth_v', '2');
+        window.location.href = '/';
       } catch {
         msg.textContent = 'Could not connect to server.';
         msg.className = 'message error';

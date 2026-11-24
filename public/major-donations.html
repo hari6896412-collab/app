@@ -3,8 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Donations Above ₹10,000</title>
-  <link rel="stylesheet" href="style.css" />
+  <title>Major Donations</title>
+  <link rel="stylesheet" href="/style.css" />
+  <script src="/theme.js"></script>
 </head>
 <body>
   <header></header>
@@ -12,18 +13,33 @@
   <div class="container">
     <div class="section">
       <div class="section-head">
-        <h2>Donations Above ₹10,000</h2>
+        <h2 id="majorTitle">Major Donations</h2>
         <span class="total-pill" id="majorTotal">Total: ₹0</span>
       </div>
-      <p class="hint">Showing all contributions strictly above ₹10,000.</p>
+      <p class="hint" id="majorHint">Showing all contributions above the lower limit.</p>
+
+      <form id="limitForm" class="pdf-settings" style="margin-top: 4px;">
+        <div>
+          <label for="minAmount">Show donations above (₹)</label>
+          <input type="number" id="minAmount" class="pdf-amount" min="0" step="1" required />
+        </div>
+        <div>
+          <label for="centreFilter">Centre</label>
+          <select id="centreFilter" style="min-width: 200px;"></select>
+        </div>
+        <button type="submit">Apply</button>
+        <button type="button" class="btn-soft" id="resetLimitBtn">Use default</button>
+        <button type="button" class="btn-approve" id="saveDefaultBtn" hidden style="padding: 10px 14px;">Save as default for everyone</button>
+      </form>
       <div id="majorMsg" class="message"></div>
 
-      <div class="table-wrap">
+      <div class="table-wrap" style="margin-top: 16px;">
         <table>
           <thead>
             <tr>
               <th>#</th>
               <th>Donor</th>
+              <th>Centre</th>
               <th>Event / Cause</th>
               <th>Amount</th>
               <th>Note</th>
@@ -38,10 +54,15 @@
 
   <script>
     const token = localStorage.getItem('token');
+    const accessLevel = Number(localStorage.getItem('access_level'));
+    const LIMIT_KEY = 'major_min_amount';
 
     if (!token) {
       window.location.href = '/index.html';
     }
+
+    let donations = [];
+    let savedDefault = 10000;
 
     function logout() {
       localStorage.clear();
@@ -70,14 +91,54 @@
       });
     }
 
-    async function loadMajorDonations() {
-      const tbody = document.getElementById('majorTableBody');
-      const totalEl = document.getElementById('majorTotal');
+    function showMsg(text, kind) {
       const msg = document.getElementById('majorMsg');
-      msg.className = 'message';
+      msg.textContent = text;
+      msg.className = `message ${kind || ''}`;
+    }
 
+    function render(threshold) {
+      const tbody = document.getElementById('majorTableBody');
+      const filter = document.getElementById('centreFilter').value;
+      const list = donations.filter((d) => filter === 'all' || String(d.centre_id) === filter);
+      const total = list.reduce((sum, d) => sum + d.amount, 0);
+
+      document.getElementById('majorTotal').textContent = `Total: ${formatRupees(total)}`;
+      document.getElementById('majorTitle').textContent = `Donations Above ${formatRupees(threshold)}`;
+      document.getElementById('majorHint').textContent =
+        `Showing ${list.length} contribution${list.length === 1 ? '' : 's'} strictly above ${formatRupees(threshold)}. ` +
+        (Number(threshold) === Number(savedDefault)
+          ? 'This is the default limit.'
+          : `The default limit is ${formatRupees(savedDefault)}.`);
+
+      if (list.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" class="empty-row">No donations above ${formatRupees(threshold)}${filter === 'all' ? '' : ' for this centre'}.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = list.map((d) => {
+        const tag = d.event_tag || 'General';
+        const tagClass = tag === 'General' ? 'event-tag-badge general' : 'event-tag-badge';
+        const offlinePill = d.is_manual ? `<span class="manual-badge">Admin Entry</span>` : '';
+        return `
+          <tr>
+            <td><b>#${d.id}</b></td>
+            <td>${escapeHtml(d.username)}</td>
+            <td>${escapeHtml(d.centre_name || '—')}</td>
+            <td><span class="${tagClass}">${escapeHtml(tag)}</span></td>
+            <td class="amount-cell">${formatRupees(d.amount)}${offlinePill}</td>
+            <td>${escapeHtml(d.note || '—')}</td>
+            <td>${formatDate(d.created_at)}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    async function loadMajorDonations(min) {
+      showMsg('', '');
+      const query = min !== null && min !== undefined && min !== '' ? `?min=${encodeURIComponent(min)}` : '';
       try {
-        const res = await fetch('/api/donations/major', {
+        const res = await fetch(`/api/donations/major${query}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
 
@@ -85,41 +146,76 @@
         const data = await res.json();
 
         if (!res.ok) {
-          msg.textContent = data.error || 'Could not load major donations';
-          msg.className = 'message error';
+          showMsg(data.error || 'Could not load major donations', 'error');
           return;
         }
 
-        totalEl.textContent = `Total: ${formatRupees(data.total)}`;
+        donations = data.donations || [];
+        savedDefault = data.saved_threshold ?? data.threshold;
+        document.getElementById('minAmount').value = data.threshold;
 
-        if (data.donations.length === 0) {
-          tbody.innerHTML = `<tr><td colspan="6" class="empty-row">No donations above ₹10,000 yet.</td></tr>`;
-          return;
-        }
+        const sel = document.getElementById('centreFilter');
+        const current = sel.value || 'all';
+        const centres = new Map();
+        for (const d of donations) if (d.centre_id) centres.set(d.centre_id, d.centre_name);
+        sel.innerHTML = '<option value="all">All centres</option>' +
+          Array.from(centres).map(([id, name]) => `<option value="${id}">${escapeHtml(name)}</option>`).join('');
+        sel.value = centres.has(Number(current)) ? current : 'all';
 
-        tbody.innerHTML = data.donations.map((d) => {
-          const tag = d.event_tag || 'General';
-          const tagClass = tag === 'General' ? 'event-tag-badge general' : 'event-tag-badge';
-          const offlinePill = d.is_manual ? `<span class="manual-badge">Admin Entry</span>` : '';
-          return `
-            <tr>
-              <td><b>#${d.id}</b></td>
-              <td>${escapeHtml(d.username)}</td>
-              <td><span class="${tagClass}">${escapeHtml(tag)}</span></td>
-              <td class="amount-cell">${formatRupees(d.amount)}${offlinePill}</td>
-              <td>${escapeHtml(d.note || '—')}</td>
-              <td>${formatDate(d.created_at)}</td>
-            </tr>
-          `;
-        }).join('');
+        render(data.threshold);
       } catch {
-        msg.textContent = 'Could not connect to server.';
-        msg.className = 'message error';
+        showMsg('Could not connect to server.', 'error');
       }
     }
 
-    loadMajorDonations();
+    // Anyone can change the limit for their own view (remembered in this browser)
+    document.getElementById('limitForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const value = document.getElementById('minAmount').value;
+      if (value === '' || Number(value) < 0) {
+        showMsg('Enter an amount of 0 or more.', 'error');
+        return;
+      }
+      try { localStorage.setItem(LIMIT_KEY, value); } catch {}
+      loadMajorDonations(value);
+    });
+
+    document.getElementById('resetLimitBtn').addEventListener('click', () => {
+      try { localStorage.removeItem(LIMIT_KEY); } catch {}
+      loadMajorDonations(null);
+    });
+
+    document.getElementById('centreFilter').addEventListener('change', () => {
+      render(document.getElementById('minAmount').value);
+    });
+
+    // The Super Admin can make the current amount the default for everyone (also used in PDF reports)
+    if (accessLevel === 0) {
+      const btn = document.getElementById('saveDefaultBtn');
+      btn.hidden = false;
+      btn.addEventListener('click', async () => {
+        const value = Number(document.getElementById('minAmount').value);
+        const res = await fetch('/api/settings/report-options', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ major_donation_min: value }),
+        });
+        if (res.status === 401) return logout();
+        const data = await res.json();
+        if (!res.ok) {
+          showMsg(data.error || 'Could not save', 'error');
+          return;
+        }
+        try { localStorage.removeItem(LIMIT_KEY); } catch {}
+        await loadMajorDonations(null);
+        showMsg(data.message, 'success');
+      });
+    }
+
+    let remembered = null;
+    try { remembered = localStorage.getItem(LIMIT_KEY); } catch {}
+    loadMajorDonations(remembered);
   </script>
-  <script src="nav.js"></script>
+  <script src="/nav.js"></script>
 </body>
 </html>

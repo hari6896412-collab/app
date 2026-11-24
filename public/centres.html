@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Centres</title>
+  <link rel="stylesheet" href="/style.css" />
+  <script src="/theme.js"></script>
+</head>
+<body>
+  <header></header>
+
+  <div class="container">
+    <div class="section" style="margin-bottom: 20px;">
+      <div class="section-head">
+        <h2>Centres</h2>
+        <span class="total-pill" id="rolePill">…</span>
+      </div>
+      <p class="hint" style="margin-bottom: 0;">
+        Regions contain zones, and zones contain centres. You can manage everything inside your own area.
+        To make someone a Region, Zone or Centre Admin, edit their account in <a href="/admin-db.html">Database Control</a>.
+      </p>
+      <label class="check-row" id="onlyMineWrap" hidden>
+        <input type="checkbox" id="onlyMine" checked /> Show only my area
+      </label>
+      <div id="centresMsg" class="message"></div>
+    </div>
+
+    <div class="section" id="addSection" hidden style="margin-bottom: 20px;">
+      <h3>Add to the hierarchy</h3>
+      <div class="form-grid" style="margin-top: 6px;">
+        <form id="addRegionForm" hidden>
+          <label for="newRegionName">New region</label>
+          <div style="display:flex; gap:8px;">
+            <input id="newRegionName" placeholder="e.g. Karnataka" required maxlength="80" />
+            <button type="submit" class="btn-inline">Add</button>
+          </div>
+        </form>
+        <form id="addZoneForm" hidden>
+          <label for="newZoneRegion">New zone in</label>
+          <select id="newZoneRegion"></select>
+          <div style="display:flex; gap:8px; margin-top: 8px;">
+            <input id="newZoneName" placeholder="Zone name, e.g. Udupi" required maxlength="80" />
+            <button type="submit" class="btn-inline">Add</button>
+          </div>
+        </form>
+      </div>
+      <form id="addCentreForm" hidden style="margin-top: 14px;">
+        <div class="donate-grid">
+          <div>
+            <label for="newCentreZone">New centre in zone</label>
+            <select id="newCentreZone"></select>
+          </div>
+          <div>
+            <label for="newCentreName">Centre name</label>
+            <input id="newCentreName" placeholder="e.g. Kundapur" required maxlength="80" />
+          </div>
+          <div>
+            <label for="newCentreCode">Code (optional)</label>
+            <input id="newCentreCode" placeholder="e.g. KDP" maxlength="30" />
+          </div>
+          <div>
+            <label for="newCentreAddress">Address (optional)</label>
+            <input id="newCentreAddress" maxlength="200" />
+          </div>
+          <button type="submit">Add centre</button>
+        </div>
+      </form>
+      <div id="addMsg" class="message"></div>
+    </div>
+
+    <div id="editBox" class="edit-box" hidden></div>
+    <div id="tree"></div>
+  </div>
+
+  <script src="/access.js"></script>
+  <script>
+    const { token, esc } = window.Access;
+    if (!token) window.location.href = '/index.html';
+    else if (!window.Access.isAdmin) window.location.href = '/';
+
+    let data = null;
+
+    function logout() {
+      localStorage.clear();
+      window.location.href = '/index.html';
+    }
+
+    function rupees(v) {
+      return '₹' + Number(v || 0).toLocaleString('en-IN');
+    }
+
+    function showMsg(el, text, ok) {
+      const m = document.getElementById(el);
+      m.textContent = text;
+      m.className = `message ${ok ? 'success' : 'error'}`;
+    }
+
+    async function send(method, url, body) {
+      const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (res.status === 401) return logout();
+      const json = await res.json().catch(() => ({}));
+      return { ok: res.ok, json };
+    }
+
+    function adminsHtml(list, label) {
+      if (!list.length) return `<span class="stat-sub">No ${label} yet</span>`;
+      return list.map((a) => `<span class="meta-tag">${esc(a.username)} #${a.login_id}</span>`).join(' ');
+    }
+
+    function render() {
+      const onlyMine = !data.me.is_super && document.getElementById('onlyMine').checked;
+      const tree = document.getElementById('tree');
+
+      const regions = data.regions
+        .map((r) => {
+          const zones = r.zones
+            .map((z) => ({ ...z, centres: z.centres.filter((c) => !onlyMine || c.can_manage) }))
+            .filter((z) => !onlyMine || z.can_manage || z.centres.length);
+          return { ...r, zones };
+        })
+        .filter((r) => !onlyMine || r.can_manage || r.zones.length);
+
+      if (!regions.length) {
+        tree.innerHTML = '<div class="section welcome-box"><h2>No centres yet</h2></div>';
+        return;
+      }
+
+      tree.innerHTML = regions.map((r) => `
+        <div class="section" style="margin-bottom: 18px;">
+          <div class="section-head">
+            <div>
+              <span class="report-type-pill">Region</span>
+              <h2 style="display:inline; margin-left: 6px;">${esc(r.name)}</h2>
+            </div>
+            <div class="report-actions">
+              ${r.can_edit ? `<button class="btn-approve" data-rename-region="${r.id}">Rename</button>
+                              <button class="btn-reject" data-del-region="${r.id}">Delete</button>` : ''}
+            </div>
+          </div>
+          <div class="event-meta" style="margin: 6px 0 4px;">Region Admins: ${adminsHtml(r.admins, 'Region Admins')}</div>
+
+          ${r.zones.length ? r.zones.map((z) => `
+            <div class="category-expense-group" style="margin-top: 14px;">
+              <div class="category-group-head">
+                <div>
+                  <span class="type-tag-badge">Zone</span>
+                  <b style="margin-left: 6px;">${esc(z.name)}</b>
+                  <span class="stat-sub" style="margin-left: 8px;">Zone Admins: ${z.admins.map((a) => esc(a.username)).join(', ') || 'none'}</span>
+                </div>
+                <div class="report-actions">
+                  ${z.can_edit ? `<button class="btn-approve" data-edit-zone="${z.id}">Edit</button>
+                                  <button class="btn-reject" data-del-zone="${z.id}">Delete</button>` : ''}
+                </div>
+              </div>
+              <div class="table-wrap" style="margin-top: 10px;">
+                <table>
+                  <thead><tr><th>Centre</th><th>Code</th><th>Centre Admins</th><th>Members</th><th>Houses</th><th>Events</th><th>Donations</th><th></th></tr></thead>
+                  <tbody>
+                    ${z.centres.length ? z.centres.map((c) => `
+                      <tr>
+                        <td><b>${esc(c.name)}</b>${c.address ? `<div class="stat-sub">${esc(c.address)}</div>` : ''}</td>
+                        <td>${esc(c.code || '—')}</td>
+                        <td>${c.admins.map((a) => esc(a.username)).join(', ') || '<span class="stat-sub">none</span>'}</td>
+                        <td>${c.member_count}</td>
+                        <td>${c.house_count}</td>
+                        <td>${c.event_count}</td>
+                        <td class="amount-cell">${rupees(c.donation_total)}</td>
+                        <td style="white-space:nowrap;">
+                          ${c.can_edit_details ? `<button class="btn-approve" data-edit-centre="${c.id}">Edit</button>` : ''}
+                          ${c.can_move_or_delete ? `<button class="btn-reject" data-del-centre="${c.id}">Delete</button>` : ''}
+                        </td>
+                      </tr>`).join('') : '<tr><td colspan="8" class="empty-row">No centres in this zone yet.</td></tr>'}
+                  </tbody>
+                </table>
+              </div>
+            </div>`).join('') : '<p class="hint" style="margin-top: 10px;">No zones in this region yet.</p>'}
+        </div>`).join('');
+    }
+
+    function findZone(id) {
+      for (const r of data.regions) for (const z of r.zones) if (z.id === id) return { r, z };
+      return null;
+    }
+
+    function findCentre(id) {
+      for (const r of data.regions) for (const z of r.zones) for (const c of z.centres) if (c.id === id) return { r, z, c };
+      return null;
+    }
+
+    function fillAddForms() {
+      const me = data.me;
+      const manageRegions = data.regions.filter((r) => r.can_manage);
+      const manageZones = [];
+      for (const r of data.regions) for (const z of r.zones) if (z.can_manage) manageZones.push({ r, z });
+
+      document.getElementById('addRegionForm').hidden = !me.is_super;
+      document.getElementById('addZoneForm').hidden = manageRegions.length === 0;
+      document.getElementById('addCentreForm').hidden = manageZones.length === 0;
+      document.getElementById('addSection').hidden = !me.is_super && !manageRegions.length && !manageZones.length;
+
+      document.getElementById('newZoneRegion').innerHTML = manageRegions
+        .map((r) => `<option value="${r.id}">${esc(r.name)}</option>`).join('');
+      document.getElementById('newCentreZone').innerHTML = manageZones
+        .map(({ r, z }) => `<option value="${z.id}">${esc(r.name)} › ${esc(z.name)}</option>`).join('');
+    }
+
+    async function load() {
+      const res = await fetch('/api/hierarchy', { headers: { Authorization: `Bearer ${token}` } });
+      if (res.status === 401) return logout();
+      data = await res.json();
+      document.getElementById('rolePill').textContent = data.me.role_label;
+      document.getElementById('onlyMineWrap').hidden = data.me.is_super;
+      fillAddForms();
+      render();
+    }
+
+    document.getElementById('onlyMine').addEventListener('change', render);
+
+    document.getElementById('addRegionForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const r = await send('POST', '/api/regions', { name: document.getElementById('newRegionName').value });
+      showMsg('addMsg', r.json.message || r.json.error, r.ok);
+      if (r.ok) { e.target.reset(); load(); }
+    });
+
+    document.getElementById('addZoneForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const r = await send('POST', '/api/zones', {
+        region_id: Number(document.getElementById('newZoneRegion').value),
+        name: document.getElementById('newZoneName').value,
+      });
+      showMsg('addMsg', r.json.message || r.json.error, r.ok);
+      if (r.ok) { document.getElementById('newZoneName').value = ''; load(); }
+    });
+
+    document.getElementById('addCentreForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const r = await send('POST', '/api/centres', {
+        zone_id: Number(document.getElementById('newCentreZone').value),
+        name: document.getElementById('newCentreName').value,
+        code: document.getElementById('newCentreCode').value,
+        address: document.getElementById('newCentreAddress').value,
+      });
+      showMsg('addMsg', r.json.message || r.json.error, r.ok);
+      if (r.ok) {
+        ['newCentreName', 'newCentreCode', 'newCentreAddress'].forEach((id) => { document.getElementById(id).value = ''; });
+        load();
+      }
+    });
+
+    function closeEdit() {
+      const box = document.getElementById('editBox');
+      box.hidden = true;
+      box.innerHTML = '';
+    }
+
+    function openCentreEdit(id) {
+      const { z, c } = findCentre(id);
+      const zoneOpts = [];
+      for (const r of data.regions) for (const zz of r.zones) {
+        if (zz.can_manage || zz.id === z.id) zoneOpts.push(`<option value="${zz.id}" ${zz.id === z.id ? 'selected' : ''}>${esc(r.name)} › ${esc(zz.name)}</option>`);
+      }
+      const box = document.getElementById('editBox');
+      box.innerHTML = `
+        <h3>Edit centre: ${esc(c.name)}</h3>
+        <form id="centreEditForm">
+          <div class="donate-grid">
+            <div><label>Name</label><input id="ec_name" value="${esc(c.name)}" required maxlength="80" /></div>
+            <div><label>Code</label><input id="ec_code" value="${esc(c.code || '')}" maxlength="30" /></div>
+            <div><label>Address</label><input id="ec_addr" value="${esc(c.address || '')}" maxlength="200" /></div>
+            ${c.can_move_or_delete ? `<div><label>Zone</label><select id="ec_zone">${zoneOpts.join('')}</select></div>` : ''}
+          </div>
+          <div class="builder-toolbar" style="margin-bottom:0;">
+            <button type="submit" class="btn-approve">Save</button>
+            <button type="button" class="mini-btn" id="ec_cancel">Cancel</button>
+          </div>
+        </form>`;
+      box.hidden = false;
+      box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      document.getElementById('ec_cancel').onclick = closeEdit;
+      document.getElementById('centreEditForm').onsubmit = async (e) => {
+        e.preventDefault();
+        const body = {
+          name: document.getElementById('ec_name').value,
+          code: document.getElementById('ec_code').value,
+          address: document.getElementById('ec_addr').value,
+        };
+        const zoneSel = document.getElementById('ec_zone');
+        if (zoneSel) body.zone_id = Number(zoneSel.value);
+        const r = await send('PUT', `/api/centres/${id}`, body);
+        showMsg('centresMsg', r.json.message || r.json.error, r.ok);
+        if (r.ok) { closeEdit(); load(); }
+      };
+    }
+
+    function openZoneEdit(id) {
+      const { r: region, z } = findZone(id);
+      const regionOpts = data.regions.filter((r) => r.can_manage)
+        .map((r) => `<option value="${r.id}" ${r.id === region.id ? 'selected' : ''}>${esc(r.name)}</option>`).join('');
+      const box = document.getElementById('editBox');
+      box.innerHTML = `
+        <h3>Edit zone: ${esc(z.name)}</h3>
+        <form id="zoneEditForm">
+          <div class="donate-grid">
+            <div><label>Name</label><input id="ez_name" value="${esc(z.name)}" required maxlength="80" /></div>
+            <div><label>Region</label><select id="ez_region">${regionOpts}</select></div>
+          </div>
+          <div class="builder-toolbar" style="margin-bottom:0;">
+            <button type="submit" class="btn-approve">Save</button>
+            <button type="button" class="mini-btn" id="ez_cancel">Cancel</button>
+          </div>
+        </form>`;
+      box.hidden = false;
+      box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      document.getElementById('ez_cancel').onclick = closeEdit;
+      document.getElementById('zoneEditForm').onsubmit = async (e) => {
+        e.preventDefault();
+        const r = await send('PUT', `/api/zones/${id}`, {
+          name: document.getElementById('ez_name').value,
+          region_id: Number(document.getElementById('ez_region').value),
+        });
+        showMsg('centresMsg', r.json.message || r.json.error, r.ok);
+        if (r.ok) { closeEdit(); load(); }
+      };
+    }
+
+    document.getElementById('tree').addEventListener('click', async (e) => {
+      const t = e.target.closest('button');
+      if (!t) return;
+      const d = t.dataset;
+      let result = null;
+
+      if (d.renameRegion) {
+        const r = data.regions.find((x) => x.id === Number(d.renameRegion));
+        const name = prompt('New region name', r.name);
+        if (!name) return;
+        result = await send('PUT', `/api/regions/${r.id}`, { name });
+      } else if (d.delRegion) {
+        if (!confirm('Delete this region? It must have no zones.')) return;
+        result = await send('DELETE', `/api/regions/${d.delRegion}`);
+      } else if (d.editZone) {
+        openZoneEdit(Number(d.editZone));
+      } else if (d.delZone) {
+        if (!confirm('Delete this zone? It must have no centres.')) return;
+        result = await send('DELETE', `/api/zones/${d.delZone}`);
+      } else if (d.editCentre) {
+        openCentreEdit(Number(d.editCentre));
+      } else if (d.delCentre) {
+        if (!confirm('Delete this centre? It must have no members, houses, events, donations or expenses.')) return;
+        result = await send('DELETE', `/api/centres/${d.delCentre}`);
+      }
+
+      if (result) {
+        showMsg('centresMsg', result.json.message || result.json.error, result.ok);
+        if (result.ok) load();
+      }
+    });
+
+    load();
+  </script>
+  <script src="/nav.js"></script>
+</body>
+</html>

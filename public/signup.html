@@ -4,7 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Sign Up</title>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="/style.css" />
+  <script src="/theme.js"></script>
 </head>
 <body class="center-page">
   <div class="card">
@@ -30,11 +31,11 @@
         <button type="button" class="toggle-pw" onclick="togglePassword('confirmPassword', this)">Show</button>
       </div>
 
-      <label for="accessLevel">Access Level</label>
-      <select id="accessLevel" required>
-        <option value="2">Level 2 (Operator)</option>
-        <option value="1">Level 1 (Admin)</option>
+      <label for="centreSelect">Your Centre</label>
+      <select id="centreSelect" required>
+        <option value="">Loading centres…</option>
       </select>
+      <p class="hint" style="margin: 6px 0 0;">Your donations go to this centre, and its admins approve your account.</p>
 
       <!-- Dynamic typed columns & dropdowns added by Level 0 load here automatically -->
       <div id="customFieldsContainer"></div>
@@ -52,7 +53,7 @@
 
   <script>
     if (localStorage.getItem('token')) {
-      window.location.href = '/dashboard.html';
+      window.location.href = '/';
     }
 
     let customColumns = [];
@@ -71,6 +72,28 @@
       input.type = isHidden ? 'text' : 'password';
       btn.textContent = isHidden ? 'Hide' : 'Show';
     }
+
+    async function loadCentres() {
+      const sel = document.getElementById('centreSelect');
+      try {
+        const res = await fetch('/api/centres/public');
+        const data = await res.json();
+        const groups = new Map();
+        for (const c of data.centres || []) {
+          const key = `${c.region_name} › ${c.zone_name}`;
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key).push(c);
+        }
+        sel.innerHTML = '<option value="">-- Select your centre --</option>' +
+          Array.from(groups).map(([label, list]) =>
+            `<optgroup label="${escapeHtml(label)}">${list.map((c) =>
+              `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}</optgroup>`).join('');
+        if ((data.centres || []).length === 1) sel.value = String(data.centres[0].id);
+      } catch {
+        sel.innerHTML = '<option value="">Could not load centres</option>';
+      }
+    }
+    loadCentres();
 
     async function loadCustomUserColumns() {
       const container = document.getElementById('customFieldsContainer');
@@ -135,7 +158,7 @@
       const email = document.getElementById('email').value.trim();
       const password = document.getElementById('password').value;
       const confirmPassword = document.getElementById('confirmPassword').value;
-      const access_level = Number(document.getElementById('accessLevel').value);
+      const centre_id = Number(document.getElementById('centreSelect').value);
 
       if (password !== confirmPassword) {
         msg.textContent = 'Passwords do not match.';
@@ -159,7 +182,7 @@
         const res = await fetch('/api/signup', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, email, password, access_level, custom_fields }),
+          body: JSON.stringify({ username, email, password, centre_id, custom_fields }),
         });
 
         const data = await res.json();

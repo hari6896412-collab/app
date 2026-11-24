@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>About</title>
+  <link rel="stylesheet" href="/style.css" />
+  <script src="/theme.js"></script>
+</head>
+<body class="about-page">
+  <header></header>
+
+  <main id="aboutRoot" class="about-root" aria-live="polite"></main>
+  <div id="signinStrip"></div>
+
+  <button type="button" id="editFab" class="edit-fab" hidden>✎ Edit page</button>
+
+  <aside id="editor" class="editor-drawer" hidden aria-label="About page editor">
+    <div class="editor-top">
+      <h3>Edit About page</h3>
+      <button type="button" class="btn-soft" id="closeEditorBtn">Close</button>
+      <button type="button" id="saveAboutBtn">Save page</button>
+      <div class="editor-status" id="editorStatus">All changes saved.</div>
+    </div>
+    <div class="editor-scroll" id="editorScroll">
+      <div class="editor-add">
+        <select id="newSectionLayout" aria-label="New section type">
+          <option value="hero">Hero banner (big title over a background)</option>
+          <option value="text">Text section</option>
+          <option value="media">Photos &amp; videos</option>
+          <option value="split">Text beside a photo / video</option>
+        </select>
+        <button type="button" id="addSectionBtn">+ Add section</button>
+      </div>
+      <div id="sectionList"></div>
+    </div>
+  </aside>
+
+  <script src="/uploads.js"></script>
+  <script src="/lightbox.js"></script>
+  <script>
+    const token = localStorage.getItem('token');
+    const accessLevel = Number(localStorage.getItem('access_level'));
+    const canEdit = Boolean(token) && accessLevel === 0; // site-wide page: Super Admin only
+
+    const LAYOUT_LABELS = {
+      hero: 'Hero banner',
+      text: 'Text',
+      media: 'Photos & videos',
+      split: 'Text + media',
+    };
+
+    const MAX_IMAGE_MB = 15;
+    const MAX_VIDEO_MB = 250;
+
+    let saved = { sections: [] };
+    let draft = null;
+    let editing = false;
+    let dirty = false;
+    const openSections = new Set();
+    const sectionEls = new Map();
+    const sectionHtmlCache = new Map();
+
+    function esc(str) {
+      return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function clone(obj) {
+      return JSON.parse(JSON.stringify(obj));
+    }
+
+    function newId() {
+      return 'sec-' + Math.random().toString(36).slice(2, 9);
+    }
+
+    function defaultBackground(type = 'none') {
+      return {
+        type, color: '#7f1d1d', color2: '#ea580c', angle: 135,
+        url: '', poster: '', overlay: 35, overlayColor: '#000000', blur: 0, fixed: false,
+      };
+    }
+
+    function newSection(layout) {
+      const base = {
+        id: newId(), layout, eyebrow: '', heading: '', body: '', media: [], mediaSide: 'right',
+        background: defaultBackground('none'), textTone: 'dark', align: 'left', height: 'auto',
+        button: { label: '', href: '' },
+      };
+      if (layout === 'hero') {
+        return {
+          ...base, heading: 'A big, bold title', body: 'A short line that welcomes people.',
+          background: { ...defaultBackground('gradient'), overlay: 0 }, textTone: 'light', align: 'center', height: 'tall',
+        };
+      }
+      if (layout === 'media') return { ...base, heading: 'Photos & videos' };
+      if (layout === 'split') return { ...base, heading: 'Section title', body: 'Write a few lines here.' };
+      return { ...base, heading: 'Section title', body: 'Write your text here.' };
+    }
+
+    // ---------- Rendering the page ----------
+
+    function paragraphs(text) {
+      return String(text || '')
+        .split(/\n{2,}/)
+        .map((p) => p.trim())
+        .filter(Boolean)
+        .map((p) => `<p>${esc(p).replace(/\n/g, '<br />')}</p>`)
+        .join('');
+    }
+
+    function youtubeId(url) {
+      const m = String(url || '').match(
+        /^https:\/\/(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|embed\/|live\/)|youtu\.be\/)([A-Za-z0-9_-]{6,20})/
+      );
+      return m ? m[1] : null;
+    }
+
+    function mediaKind(m) {
+      if (m.type === 'youtube' || youtubeId(m.url)) return 'youtube';
+      if (m.type === 'video' || /\.(mp4|webm|mov|ogv)(\?|$)/i.test(m.url)) return 'video';
+      return 'image';
+    }
+
+    function mediaHtml(m, sectionIdx, mediaIdx) {
+      const kind = mediaKind(m);
+      let inner = '';
+      if (kind === 'youtube') {
+        const id = youtubeId(m.url);
+        inner = id
+          ? `<iframe src="https://www.youtube-nocookie.com/embed/${esc(id)}" title="${esc(m.caption || 'Video')}"
+               loading="lazy" allow="accelerometer; encrypted-media; gyroscope; picture-in-picture; fullscreen" allowfullscreen></iframe>`
+          : '';
+      } else if (kind === 'video') {
+        inner = `<video src="${esc(m.url)}" controls playsinline preload="metadata"></video>`;
+      } else {
+        inner = `<img src="${esc(m.url)}" alt="${esc(m.caption || 'Photo')}" loading="lazy"
+                   data-lb-section="${sectionIdx}" data-lb-index="${mediaIdx}" />`;
+      }
+      const cap = m.caption ? `<figcaption class="about-caption">${esc(m.caption)}</figcaption>` : '';
+      return `<figure class="about-media">${inner}${cap}</figure>`;
+    }
+
+    function sectionInnerHtml(s, idx) {
+      const hasBg = s.background && s.background.type !== 'none';
+      const useCard = !hasBg && s.layout !== 'hero';
+      const tag = idx === 0 ? 'h1' : 'h2';
+
+      const textBlock = `
+        ${s.eyebrow ? `<span class="about-eyebrow">${esc(s.eyebrow)}</span>` : ''}
+        ${s.heading ? `<${tag} class="about-heading">${esc(s.heading)}</${tag}>` : ''}
+        ${s.body ? `<div class="about-body">${paragraphs(s.body)}</div>` : ''}
+        ${s.button && s.button.label && s.button.href
+          ? `<a class="about-btn" href="${esc(s.button.href)}">${esc(s.button.label)}</a>` : ''}
+      `;
+
+      const media = s.media || [];
+      const grid = media.length
+        ? `<div class="about-media-grid count-${Math.min(media.length, 3)}">
+             ${media.map((m, k) => mediaHtml(m, idx, k)).join('')}
+           </div>`
+        : (editing && (s.layout === 'media' || s.layout === 'split')
+            ? `<p class="hint" style="margin-top:16px;">No photos or videos yet — add some in the editor.</p>` : '');
+
+      let inner = textBlock;
+      if (s.layout === 'media') {
+        inner = textBlock + grid;
+      } else if (s.layout === 'split') {
+        inner = `
+          <div class="about-split ${s.mediaSide === 'left' ? 'media-left' : ''}">
+            <div class="about-split-text">${textBlock}</div>
+            <div class="about-split-media">${grid}</div>
+          </div>`;
+      }
+
+      return useCard ? `<div class="about-card">${inner}</div>` : inner;
+    }
+
+    function renderPage(content) {
+      const root = document.getElementById('aboutRoot');
+      const sections = (content && content.sections) || [];
+      const seen = new Set();
+
+      const empty = root.querySelector('.about-empty');
+      if (empty) empty.remove();
+
+      sections.forEach((s, idx) => {
+        seen.add(s.id);
+        let el = sectionEls.get(s.id);
+        if (!el) {
+          el = document.createElement('section');
+          el.innerHTML = '<div class="about-bg"></div><div class="about-inner"></div>';
+          sectionEls.set(s.id, el);
+        }
+
+        const hasBg = s.background && s.background.type !== 'none';
+        const tone = hasBg || s.layout === 'hero' ? s.textTone : 'dark';
+        el.className = [
+          'about-section',
+          `layout-${s.layout}`,
+          `h-${s.height || 'auto'}`,
+          `align-${s.align || 'left'}`,
+          `tone-${tone}`,
+          hasBg ? 'has-bg' : 'no-bg',
+        ].join(' ');
+        el.dataset.sectionId = s.id;
+
+        const bgEl = el.querySelector('.about-bg');
+        const bgSig = JSON.stringify(s.background || null);
+        if (bgEl.dataset.sig !== bgSig) {
+          window.SiteTheme.renderBackground(bgEl, s.background);
+          bgEl.dataset.sig = bgSig;
+        }
+
+        const html = sectionInnerHtml(s, idx);
+        if (sectionHtmlCache.get(s.id) !== html) {
+          el.querySelector('.about-inner').innerHTML = html;
+          sectionHtmlCache.set(s.id, html);
+        }
+
+        root.appendChild(el); // keeps the order in sync
+      });
+
+      for (const [id, el] of sectionEls) {
+        if (!seen.has(id)) {
+          el.remove();
+          sectionEls.delete(id);
+          sectionHtmlCache.delete(id);
+        }
+      }
+
+      if (sections.length === 0) {
+        const div = document.createElement('div');
+        div.className = 'about-empty about-card';
+        div.innerHTML = `<h2>Nothing here yet</h2><p class="hint" style="margin:0;">${
+          canEdit ? 'Click “Edit page” to add a banner, text, photos and videos.' : 'Check back soon.'
+        }</p>`;
+        root.appendChild(div);
+      }
+    }
+
+    document.getElementById('aboutRoot').addEventListener('click', (e) => {
+      const img = e.target.closest('img[data-lb-section]');
+      if (!img) return;
+      const content = editing ? draft : saved;
+      const section = content.sections[Number(img.dataset.lbSection)];
+      if (!section) return;
+      const list = section.media
+        .map((m, k) => ({ ...m, k, type: mediaKind(m) }))
+        .filter((m) => m.type === 'image' || m.type === 'video');
+      const start = list.findIndex((m) => m.k === Number(img.dataset.lbIndex));
+      window.openLightbox(list, Math.max(0, start));
+    });
+
+    function renderSigninStrip() {
+      const holder = document.getElementById('signinStrip');
+      if (token) {
+        holder.innerHTML = '';
+        return;
+      }
+      holder.innerHTML = `
+        <div class="about-signin-strip">
+          <div class="about-card">
+            <div>
+              <h3>Members</h3>
+              <p class="hint" style="margin:4px 0 0;">Sign in to see events, the gallery, People Lookup and more.</p>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              <a class="about-btn" style="margin-top:0;" href="/index.html">Sign in</a>
+              <a class="nav-btn" href="/signup.html">Create an account</a>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    async function loadAbout() {
+      try {
+        const res = await fetch('/api/about', { cache: 'no-store' });
+        const data = await res.json();
+        saved = data.content || { sections: [] };
+      } catch {
+        saved = { sections: [] };
+      }
+      renderPage(saved);
+    }
+
+    // ---------- Editor ----------
+
+    let previewTimer = null;
+    function schedulePreview() {
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(() => renderPage(draft), 120);
+    }
+
+    function setStatus(text, kind = '') {
+      const el = document.getElementById('editorStatus');
+      el.textContent = text;
+      el.className = `editor-status ${kind}`;
+    }
+
+    function markDirty() {
+      dirty = true;
+      setStatus('Unsaved changes — click “Save page” to publish.', 'dirty');
+    }
+
+    function setPath(obj, path, value) {
+      const parts = path.split('.');
+      let cur = obj;
+      for (let i = 0; i < parts.length - 1; i++) {
+        const key = /^\d+$/.test(parts[i]) ? Number(parts[i]) : parts[i];
+        if (cur[key] === undefined || cur[key] === null) cur[key] = {};
+        cur = cur[key];
+      }
+      cur[parts[parts.length - 1]] = value;
+    }
+
+    function getPath(obj, path) {
+      return path.split('.').reduce((cur, key) => (cur == null ? undefined : cur[key]), obj);
+    }
+
+    function field(i, path, label, { type = 'text', placeholder = '', rerender = false } = {}) {
+      const val = getPath(draft.sections[i], path) ?? '';
+      if (type === 'textarea') {
+        return `<label>${esc(label)}</label>
+          <textarea data-i="${i}" data-path="${path}" rows="5" placeholder="${esc(placeholder)}">${esc(val)}</textarea>`;
+      }
+      return `<label>${esc(label)}</label>
+        <input type="${type}" data-i="${i}" data-path="${path}" value="${esc(val)}" placeholder="${esc(placeholder)}"
+          ${rerender ? 'data-rerender="1"' : ''} />`;
+    }
+
+    function selectField(i, path, label, options) {
+      const val = getPath(draft.sections[i], path);
+      return `<label>${esc(label)}</label>
+        <select data-i="${i}" data-path="${path}" data-rerender="1">
+          ${options.map(([v, l]) => `<option value="${v}" ${String(val) === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}
+        </select>`;
+    }
+
+    function rangeField(i, path, label, min, max, unit) {
+      const val = Number(getPath(draft.sections[i], path) || 0);
+      return `<label>${esc(label)}</label>
+        <div class="range-row">
+          <input type="range" min="${min}" max="${max}" value="${val}" data-i="${i}" data-path="${path}" data-number="1" />
+          <output>${val}${unit}</output>
+        </div>`;
+    }
+
+    function backgroundEditor(i) {
+      const bg = draft.sections[i].background;
+      const t = bg.type;
+      let html = selectField(i, 'background.type', 'Background', [
+        ['none', 'None (plain card)'],
+        ['color', 'Solid colour'],
+        ['gradient', 'Gradient'],
+        ['image', 'Photo'],
+        ['video', 'Video (plays silently on loop)'],
+      ]);
+
+      if (t === 'color') {
+        html += field(i, 'background.color', 'Colour', { type: 'color' });
+      }
+      if (t === 'gradient') {
+        html += `<div class="two-col"><div>${field(i, 'background.color', 'From', { type: 'color' })}</div>
+                 <div>${field(i, 'background.color2', 'To', { type: 'color' })}</div></div>`;
+        html += rangeField(i, 'background.angle', 'Direction', 0, 360, '°');
+      }
+      if (t === 'image' || t === 'video') {
+        const accept = t === 'image' ? window.MEDIA_ACCEPT.images : window.MEDIA_ACCEPT.videos;
+        html += `
+          <label>${t === 'image' ? 'Background photo' : 'Background video'}</label>
+          <label class="drop-zone" style="margin-top:0;">
+            ${bg.url ? 'Replace file…' : `Choose a ${t === 'image' ? 'photo' : 'video'}…`}
+            <input type="file" accept="${accept}" data-upload="bg" data-i="${i}" />
+          </label>
+          <div class="upload-progress" id="prog-bg-${i}" hidden><span></span></div>
+          ${field(i, 'background.url', 'or paste a link', { placeholder: 'https://… or /uploads/…', rerender: true })}`;
+        if (t === 'video') {
+          html += `
+            <label>Poster image (shown while the video loads — optional)</label>
+            <label class="drop-zone" style="margin-top:0;">
+              ${bg.poster ? 'Replace poster…' : 'Choose a poster photo…'}
+              <input type="file" accept="${window.MEDIA_ACCEPT.images}" data-upload="poster" data-i="${i}" />
+            </label>
+            <div class="upload-progress" id="prog-poster-${i}" hidden><span></span></div>`;
+        }
+        html += `<div class="bg-thumb" id="bgthumb-${i}"><div class="bg-holder"></div></div>`;
+        html += rangeField(i, 'background.overlay', 'Darken / tint overlay', 0, 90, '%');
+        html += field(i, 'background.overlayColor', 'Overlay colour', { type: 'color' });
+        html += rangeField(i, 'background.blur', 'Blur', 0, 20, 'px');
+        if (t === 'image') {
+          html += `<label class="check-row"><input type="checkbox" data-i="${i}" data-path="background.fixed"
+                    ${bg.fixed ? 'checked' : ''} /> Parallax (photo stays still while scrolling)</label>`;
+        }
+      }
+      return html;
+    }
+
+    function mediaEditor(i) {
+      const s = draft.sections[i];
+      const rows = (s.media || []).map((m, k) => {
+        const kind = mediaKind(m);
+        const thumb = kind === 'image'
+          ? `<img class="media-thumb" src="${esc(m.url)}" alt="" />`
+          : `<div class="media-thumb">${kind === 'youtube' ? 'YouTube' : 'Video'}</div>`;
+        return `
+          <div class="media-row">
+            ${thumb}
+            <input type="text" data-i="${i}" data-path="media.${k}.caption" value="${esc(m.caption || '')}" placeholder="Caption (optional)" />
+            <div style="display:flex; gap:4px;">
+              <button type="button" class="mini-btn" data-action="media-up" data-i="${i}" data-k="${k}" ${k === 0 ? 'disabled' : ''}>↑</button>
+              <button type="button" class="mini-btn danger" data-action="media-del" data-i="${i}" data-k="${k}">✕</button>
+            </div>
+          </div>`;
+      }).join('');
+
+      return `
+        <div class="sec-group">
+          <div class="sec-group-title">${s.layout === 'split' ? 'Photo / video (the first one is shown)' : 'Photos & videos'}</div>
+          <div class="media-list">${rows || '<p class="hint" style="margin:0;">None yet.</p>'}</div>
+          <label class="drop-zone" style="margin-top:10px;">
+            Upload photos or videos…
+            <input type="file" multiple accept="${window.MEDIA_ACCEPT.all}" data-upload="media" data-i="${i}" />
+          </label>
+          <div class="upload-progress" id="prog-media-${i}" hidden><span></span></div>
+          <label>Or add a link (YouTube, or a direct photo/video link)</label>
+          <div style="display:flex; gap:6px;">
+            <input type="url" id="mediaLink-${i}" placeholder="https://www.youtube.com/watch?v=…" />
+            <button type="button" class="btn-soft" data-action="media-link" data-i="${i}">Add</button>
+          </div>
+        </div>`;
+    }
+
+    function sectionEditor(s, i) {
+      const isOpen = openSections.has(s.id);
+      const title = s.heading || s.eyebrow || '(untitled)';
+      const n = draft.sections.length;
+
+      let body = '';
+      if (isOpen) {
+        body = `
+          <div class="sec-body">
+            ${selectField(i, 'layout', 'Section type', [
+              ['hero', 'Hero banner'], ['text', 'Text'], ['media', 'Photos & videos'], ['split', 'Text beside photo / video'],
+            ])}
+            ${field(i, 'eyebrow', 'Small label above the title', { placeholder: 'e.g. Since 1952' })}
+            ${field(i, 'heading', 'Title')}
+            ${field(i, 'body', 'Text', { type: 'textarea', placeholder: 'Leave a blank line between paragraphs.' })}
+            <div class="two-col">
+              <div>${field(i, 'button.label', 'Button text (optional)', { placeholder: 'e.g. See events' })}</div>
+              <div>${field(i, 'button.href', 'Button link', { placeholder: '/events.html' })}</div>
+            </div>
+
+            ${s.layout === 'media' || s.layout === 'split' ? mediaEditor(i) : ''}
+
+            <div class="sec-group">
+              <div class="sec-group-title">Background</div>
+              ${backgroundEditor(i)}
+            </div>
+
+            <div class="sec-group">
+              <div class="sec-group-title">Layout</div>
+              <div class="two-col">
+                <div>${selectField(i, 'textTone', 'Text colour', [['dark', 'Dark text'], ['light', 'Light text']])}</div>
+                <div>${selectField(i, 'align', 'Alignment', [['left', 'Left'], ['center', 'Centre']])}</div>
+              </div>
+              <div class="two-col">
+                <div>${selectField(i, 'height', 'Height', [
+                  ['auto', 'Fit content'], ['medium', 'Medium'], ['tall', 'Tall'], ['screen', 'Full screen'],
+                ])}</div>
+                ${s.layout === 'split'
+                  ? `<div>${selectField(i, 'mediaSide', 'Photo / video side', [['right', 'Right'], ['left', 'Left']])}</div>`
+                  : '<div></div>'}
+              </div>
+            </div>
+          </div>`;
+      }
+
+      return `
+        <div class="sec-card ${isOpen ? 'open' : ''}">
+          <div class="sec-head" data-action="toggle" data-i="${i}">
+            <span class="sec-kind">${esc(LAYOUT_LABELS[s.layout] || s.layout)}</span>
+            <span class="sec-title">${esc(title)}</span>
+            <button type="button" class="mini-btn" data-action="up" data-i="${i}" ${i === 0 ? 'disabled' : ''} aria-label="Move up">↑</button>
+            <button type="button" class="mini-btn" data-action="down" data-i="${i}" ${i === n - 1 ? 'disabled' : ''} aria-label="Move down">↓</button>
+            <button type="button" class="mini-btn" data-action="dup" data-i="${i}" aria-label="Duplicate">⧉</button>
+            <button type="button" class="mini-btn danger" data-action="del" data-i="${i}" aria-label="Delete">✕</button>
+          </div>
+          ${body}
+        </div>`;
+    }
+
+    function renderEditor() {
+      const list = document.getElementById('sectionList');
+      const scroll = document.getElementById('editorScroll');
+      const top = scroll.scrollTop;
+      list.innerHTML = draft.sections.length
+        ? draft.sections.map(sectionEditor).join('')
+        : '<p class="hint">No sections. Add one above.</p>';
+      scroll.scrollTop = top;
+
+      draft.sections.forEach((s, i) => {
+        const thumb = document.getElementById(`bgthumb-${i}`);
+        if (thumb) window.SiteTheme.renderBackground(thumb.querySelector('.bg-holder'), s.background);
+      });
+    }
+
+    function openEditor() {
+      draft = clone(saved);
+      if (!draft.sections) draft.sections = [];
+      draft.sections.forEach((s) => {
+        s.background = { ...defaultBackground(s.background ? s.background.type : 'none'), ...(s.background || {}) };
+        s.button = s.button || { label: '', href: '' };
+        s.media = s.media || [];
+      });
+      if (draft.sections[0]) openSections.add(draft.sections[0].id);
+      editing = true;
+      dirty = false;
+      document.body.classList.add('editor-open');
+      document.getElementById('editor').hidden = false;
+      document.getElementById('editFab').hidden = true;
+      setStatus('All changes saved.');
+      renderEditor();
+      renderPage(draft);
+    }
+
+    function closeEditor() {
+      if (dirty && !confirm('Discard your unsaved changes?')) return;
+      editing = false;
+      dirty = false;
+      draft = null;
+      document.body.classList.remove('editor-open');
+      document.getElementById('editor').hidden = true;
+      document.getElementById('editFab').hidden = false;
+      renderPage(saved);
+    }
+
+    async function saveAbout() {
+      const btn = document.getElementById('saveAboutBtn');
+      btn.disabled = true;
+      setStatus('Saving…');
+      try {
+        const res = await fetch('/api/about', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify(draft),
+        });
+        const data = await res.json();
+        if (res.status === 401) {
+          setStatus('Your session expired — sign in again (your edits are still here).', 'error');
+          return;
+        }
+        if (!res.ok) {
+          setStatus(data.error || 'Could not save.', 'error');
+          return;
+        }
+        saved = data.content;
+        const open = new Set(openSections);
+        draft = clone(saved);
+        draft.sections.forEach((s) => {
+          s.background = { ...defaultBackground(s.background.type), ...s.background };
+        });
+        openSections.clear();
+        draft.sections.forEach((s) => open.has(s.id) && openSections.add(s.id));
+        dirty = false;
+        setStatus('Saved — the page is live.', 'ok');
+        renderEditor();
+        renderPage(draft);
+      } catch {
+        setStatus('Could not connect to server.', 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function checkFileSize(file) {
+      const isVideo = file.type.startsWith('video/');
+      const maxMb = isVideo ? MAX_VIDEO_MB : MAX_IMAGE_MB;
+      if (file.size > maxMb * 1024 * 1024) {
+        alert(`"${file.name}" is too large (max ${maxMb} MB for ${isVideo ? 'videos' : 'photos'}).`);
+        return false;
+      }
+      return true;
+    }
+
+    function showProgress(id, pct) {
+      const bar = document.getElementById(id);
+      if (!bar) return;
+      bar.hidden = pct === null;
+      bar.querySelector('span').style.width = `${pct || 0}%`;
+    }
+
+    async function handleUpload(input) {
+      const i = Number(input.dataset.i);
+      const kind = input.dataset.upload;
+      const files = Array.from(input.files || []).filter(checkFileSize);
+      input.value = '';
+      if (!files.length) return;
+
+      const progId = `prog-${kind}-${i}`;
+      const section = draft.sections[i];
+      setStatus(`Uploading ${files.length} file(s)…`);
+
+      try {
+        for (let f = 0; f < files.length; f++) {
+          const file = files[f];
+          const result = await window.uploadMedia(file, {
+            onProgress: (pct) => showProgress(progId, Math.round(((f + pct / 100) / files.length) * 100)),
+          });
+          if (kind === 'media') {
+            section.media.push({ type: result.media_type, url: result.url, caption: '' });
+          } else if (kind === 'bg') {
+            section.background.url = result.url;
+            section.background.type = result.media_type === 'video' ? 'video' : 'image';
+          } else if (kind === 'poster') {
+            section.background.poster = result.url;
+          }
+        }
+        markDirty();
+      } catch (err) {
+        setStatus(err.message, 'error');
+      } finally {
+        showProgress(progId, null);
+        renderEditor();
+        renderPage(draft);
+      }
+    }
+
+    if (canEdit) {
+      const fab = document.getElementById('editFab');
+      fab.hidden = false;
+      fab.addEventListener('click', openEditor);
+      document.getElementById('closeEditorBtn').addEventListener('click', closeEditor);
+      document.getElementById('saveAboutBtn').addEventListener('click', saveAbout);
+
+      document.getElementById('addSectionBtn').addEventListener('click', () => {
+        const layout = document.getElementById('newSectionLayout').value;
+        const s = newSection(layout);
+        draft.sections.push(s);
+        openSections.add(s.id);
+        markDirty();
+        renderEditor();
+        renderPage(draft);
+        const scroll = document.getElementById('editorScroll');
+        scroll.scrollTop = scroll.scrollHeight;
+        const el = sectionEls.get(s.id);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+
+      const list = document.getElementById('sectionList');
+
+      list.addEventListener('input', (e) => {
+        const t = e.target;
+        if (!t.dataset.path || t.type === 'file') return;
+        const i = Number(t.dataset.i);
+        let value = t.type === 'checkbox' ? t.checked : t.value;
+        if (t.dataset.number) value = Number(value);
+        setPath(draft.sections[i], t.dataset.path, value);
+        if (t.type === 'range') {
+          const out = t.parentElement.querySelector('output');
+          if (out) out.textContent = out.textContent.replace(/^-?\d+/, String(value));
+        }
+        if (t.dataset.path === 'heading' || t.dataset.path === 'eyebrow') {
+          const titleEl = t.closest('.sec-card').querySelector('.sec-title');
+          const s = draft.sections[i];
+          titleEl.textContent = s.heading || s.eyebrow || '(untitled)';
+        }
+        if (t.dataset.path.startsWith('background.')) {
+          const thumb = document.getElementById(`bgthumb-${i}`);
+          if (thumb) window.SiteTheme.renderBackground(thumb.querySelector('.bg-holder'), draft.sections[i].background);
+        }
+        markDirty();
+        schedulePreview();
+      });
+
+      list.addEventListener('change', (e) => {
+        const t = e.target;
+        if (t.type === 'file' && t.dataset.upload) {
+          handleUpload(t);
+          return;
+        }
+        if (t.dataset.rerender) {
+          if (t.dataset.path === 'background.type') {
+            const bg = draft.sections[Number(t.dataset.i)].background;
+            const urlIsVideo = /\.(mp4|webm|mov|ogv)(\?|$)/i.test(bg.url || '');
+            // Switching between photo and video: drop a file of the wrong kind
+            if ((bg.type === 'image' || bg.type === 'video') && bg.url && urlIsVideo !== (bg.type === 'video')) {
+              bg.url = '';
+            }
+            // Photos and videos get a gentle dark overlay so text stays readable
+            if ((bg.type === 'image' || bg.type === 'video') && !Number(bg.overlay)) bg.overlay = 35;
+          }
+          renderEditor();
+          renderPage(draft);
+        }
+      });
+
+      list.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-action]');
+        if (!btn || btn.disabled) return;
+        const action = btn.dataset.action;
+        const i = Number(btn.dataset.i);
+        const secs = draft.sections;
+
+        if (action === 'toggle') {
+          if (e.target.closest('button')) return; // a head button was clicked
+          const id = secs[i].id;
+          openSections.has(id) ? openSections.delete(id) : openSections.add(id);
+          renderEditor();
+          const el = sectionEls.get(id);
+          if (el && openSections.has(id)) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          return;
+        }
+
+        e.stopPropagation();
+
+        if (action === 'up' && i > 0) [secs[i - 1], secs[i]] = [secs[i], secs[i - 1]];
+        if (action === 'down' && i < secs.length - 1) [secs[i + 1], secs[i]] = [secs[i], secs[i + 1]];
+        if (action === 'dup') {
+          const copy = clone(secs[i]);
+          copy.id = newId();
+          secs.splice(i + 1, 0, copy);
+          openSections.add(copy.id);
+        }
+        if (action === 'del') {
+          if (!confirm('Delete this section?')) return;
+          secs.splice(i, 1);
+        }
+        if (action === 'media-del') secs[i].media.splice(Number(btn.dataset.k), 1);
+        if (action === 'media-up') {
+          const k = Number(btn.dataset.k);
+          const m = secs[i].media;
+          [m[k - 1], m[k]] = [m[k], m[k - 1]];
+        }
+        if (action === 'media-link') {
+          const input = document.getElementById(`mediaLink-${i}`);
+          const url = input.value.trim();
+          if (!/^https:\/\//i.test(url)) {
+            alert('Please paste a full link starting with https://');
+            return;
+          }
+          const type = youtubeId(url) ? 'youtube' : /\.(mp4|webm|mov|ogv)(\?|$)/i.test(url) ? 'video' : 'image';
+          secs[i].media.push({ type, url, caption: '' });
+        }
+
+        markDirty();
+        renderEditor();
+        renderPage(draft);
+      });
+
+      window.addEventListener('beforeunload', (e) => {
+        if (editing && dirty) {
+          e.preventDefault();
+          e.returnValue = '';
+        }
+      });
+    }
+
+    renderSigninStrip();
+    loadAbout();
+  </script>
+  <script src="/nav.js"></script>
+</body>
+</html>

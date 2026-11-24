@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin Log</title>
+  <link rel="stylesheet" href="/style.css" />
+  <script src="/theme.js"></script>
+  <style>
+    .log-details { margin-top: 6px; }
+    .log-details summary { cursor: pointer; font-size: 0.8rem; color: var(--muted); font-weight: 600; }
+    .log-details pre {
+      margin-top: 6px; padding: 10px; background: var(--surface-alt); border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm); font-size: 0.76rem; white-space: pre-wrap; word-break: break-word; max-width: 520px;
+    }
+    .action-pill {
+      display: inline-block; font-size: 0.74rem; font-weight: 700; padding: 3px 9px; border-radius: 999px;
+      background: #f1f5f9; border: 1px solid #cbd5e1; color: #334155; white-space: nowrap;
+    }
+    .action-pill.delete, .action-pill.reject, .action-pill.remove_column, .action-pill.photo_remove { background: #fef2f2; border-color: #fca5a5; color: #991b1b; }
+    .action-pill.create, .action-pill.approve, .action-pill.add, .action-pill.record_offline, .action-pill.generate, .action-pill.add_column { background: #ecfdf5; border-color: #6ee7b7; color: #065f46; }
+    .log-filters { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr; gap: 10px; align-items: end; }
+    @media (max-width: 900px) { .log-filters { grid-template-columns: 1fr 1fr; } }
+  </style>
+</head>
+<body>
+  <header></header>
+
+  <div class="container" style="max-width: 1240px;">
+    <div class="section">
+      <div class="section-head">
+        <h2>Admin Log</h2>
+        <span class="total-pill" id="logCount">…</span>
+      </div>
+      <p class="hint" id="logScopeHint">Every action admins take with their special privileges is recorded here and cannot be edited or deleted.</p>
+
+      <div class="log-filters">
+        <div>
+          <label for="fQ">Search</label>
+          <input type="search" id="fQ" placeholder="Admin, donor, event, amount…" />
+        </div>
+        <div>
+          <label for="fAction">Action</label>
+          <select id="fAction">
+            <option value="">All actions</option>
+            <option value="user.">Accounts</option>
+            <option value="donation.">Donations</option>
+            <option value="event.">Events</option>
+            <option value="expense.">Expenses</option>
+            <option value="house.">Houses</option>
+            <option value="report.">Reports</option>
+            <option value="centre.">Centres</option>
+            <option value="zone.">Zones</option>
+            <option value="region.">Regions</option>
+            <option value="gallery.">Gallery</option>
+            <option value="schema.">Database columns</option>
+            <option value="site.">Site settings</option>
+          </select>
+        </div>
+        <div>
+          <label for="fActor">Admin</label>
+          <select id="fActor"><option value="">Anyone</option></select>
+        </div>
+        <div>
+          <label for="fFrom">From</label>
+          <input type="date" id="fFrom" />
+        </div>
+        <div>
+          <label for="fTo">To</label>
+          <input type="date" id="fTo" />
+        </div>
+      </div>
+      <div style="display:flex; gap: 8px; flex-wrap: wrap;">
+        <button type="button" id="applyBtn">Apply filters</button>
+        <button type="button" class="btn-soft" id="resetBtn" style="margin-top: 18px;">Reset</button>
+        <button type="button" class="btn-soft" id="csvBtn" style="margin-top: 18px;">⬇ Download CSV</button>
+      </div>
+      <div id="logMsg" class="message"></div>
+
+      <div class="table-wrap" style="margin-top: 16px;">
+        <table>
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Admin</th>
+              <th>Action</th>
+              <th>What happened</th>
+              <th>Centre</th>
+            </tr>
+          </thead>
+          <tbody id="logBody"></tbody>
+        </table>
+      </div>
+      <button type="button" class="btn-soft" id="moreBtn" hidden style="margin-top: 14px;">Load more</button>
+    </div>
+  </div>
+
+  <script src="/access.js"></script>
+  <script>
+    const { token, esc } = window.Access;
+    if (!token) window.location.href = '/index.html';
+    else if (!window.Access.isAdmin) window.location.href = '/';
+
+    const PAGE = 100;
+    let rows = [];
+    let total = 0;
+
+    function logout() {
+      localStorage.clear();
+      window.location.href = '/index.html';
+    }
+
+    function formatWhen(sql) {
+      const d = new Date(String(sql).replace(' ', 'T') + 'Z');
+      return isNaN(d) ? sql : d.toLocaleString('en-IN', {
+        day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+      });
+    }
+
+    function filters() {
+      const p = new URLSearchParams();
+      const q = document.getElementById('fQ').value.trim();
+      if (q) p.set('q', q);
+      for (const [id, key] of [['fAction', 'action'], ['fActor', 'actor_id'], ['fFrom', 'from'], ['fTo', 'to']]) {
+        const v = document.getElementById(id).value;
+        if (v) p.set(key, v);
+      }
+      return p;
+    }
+
+    function render() {
+      document.getElementById('logCount').textContent = `${total} ${total === 1 ? 'entry' : 'entries'}`;
+      document.getElementById('moreBtn').hidden = rows.length >= total;
+      const body = document.getElementById('logBody');
+      if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="5" class="empty-row">No admin actions match these filters.</td></tr>';
+        return;
+      }
+      body.innerHTML = rows.map((l) => {
+        const verb = l.action.split('.').pop();
+        const hasDetails = l.details && Object.keys(l.details).length;
+        return `
+          <tr>
+            <td style="white-space:nowrap;">${esc(formatWhen(l.created_at))}</td>
+            <td><b>${esc(l.actor_name || '—')}</b>${l.actor_login_id ? ` <span class="stat-sub">#${l.actor_login_id}</span>` : ''}
+              <div class="stat-sub">${esc(l.actor_role)}</div></td>
+            <td><span class="action-pill ${esc(verb)}">${esc(l.action)}</span></td>
+            <td>${esc(l.summary)}
+              ${hasDetails ? `<details class="log-details"><summary>Details</summary><pre>${esc(JSON.stringify(l.details, null, 2))}</pre></details>` : ''}
+              ${l.ip ? `<div class="stat-sub">IP ${esc(l.ip)}</div>` : ''}</td>
+            <td>${esc(l.centre_name || (l.centre_id ? `#${l.centre_id}` : 'Site-wide'))}</td>
+          </tr>`;
+      }).join('');
+    }
+
+    async function fetchPage(offset) {
+      const p = filters();
+      p.set('limit', PAGE);
+      p.set('offset', offset);
+      const res = await fetch(`/api/admin/logs?${p}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.status === 401) return logout();
+      const data = await res.json();
+      if (!res.ok) {
+        const m = document.getElementById('logMsg');
+        m.textContent = data.error || 'Could not load the log';
+        m.className = 'message error';
+        return null;
+      }
+      return data;
+    }
+
+    async function load(reset = true) {
+      const data = await fetchPage(reset ? 0 : rows.length);
+      if (!data) return;
+      total = data.total;
+      rows = reset ? data.logs : rows.concat(data.logs);
+      const actorSel = document.getElementById('fActor');
+      const current = actorSel.value;
+      actorSel.innerHTML = '<option value="">Anyone</option>' +
+        data.actors.map((a) => `<option value="${a.id}" ${String(a.id) === current ? 'selected' : ''}>${esc(a.name)}</option>`).join('');
+      render();
+    }
+
+    async function downloadCsv() {
+      const all = [];
+      for (let offset = 0; offset < Math.max(total, 1); offset += 500) {
+        const p = filters();
+        p.set('limit', 500);
+        p.set('offset', offset);
+        const res = await fetch(`/api/admin/logs?${p}`, { headers: { Authorization: `Bearer ${token}` } });
+        if (!res.ok) break;
+        const data = await res.json();
+        all.push(...data.logs);
+        if (data.logs.length < 500) break;
+      }
+      const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+      const lines = [['When (UTC)', 'Admin', 'Login ID', 'Role', 'Action', 'Summary', 'Centre', 'Details'].map(cell).join(',')];
+      for (const l of all) {
+        lines.push([l.created_at, l.actor_name, l.actor_login_id, l.actor_role, l.action, l.summary,
+          l.centre_name || 'Site-wide', JSON.stringify(l.details)].map(cell).join(','));
+      }
+      const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `admin-log-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    }
+
+    document.getElementById('applyBtn').addEventListener('click', () => load(true));
+    document.getElementById('fQ').addEventListener('keydown', (e) => { if (e.key === 'Enter') load(true); });
+    document.getElementById('resetBtn').addEventListener('click', () => {
+      ['fQ', 'fAction', 'fActor', 'fFrom', 'fTo'].forEach((id) => { document.getElementById(id).value = ''; });
+      load(true);
+    });
+    document.getElementById('moreBtn').addEventListener('click', () => load(false));
+    document.getElementById('csvBtn').addEventListener('click', downloadCsv);
+
+    if (!window.Access.isSuper) {
+      document.getElementById('logScopeHint').textContent =
+        'Actions taken in your centres, plus your own actions. Entries cannot be edited or deleted.';
+    }
+
+    load(true);
+  </script>
+  <script src="/nav.js"></script>
+</body>
+</html>

@@ -148,7 +148,7 @@ db.exec(`
     username TEXT UNIQUE NOT NULL,
     email TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
-    access_level INTEGER NOT NULL CHECK (access_level IN (0, 1, 2)),
+    access_level INTEGER NOT NULL CHECK (access_level IN (0, 1, 2, 3, 4)),
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
     house_id INTEGER DEFAULT NULL,
     created_by INTEGER,
@@ -162,7 +162,7 @@ db.exec(`
 
 // Auto-migrate older users table (adds Level 0, login_id, house_id without losing data)
 const usersTableMeta = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'").get();
-if (usersTableMeta && (!usersTableMeta.sql.includes('IN (0, 1, 2)') || !usersTableMeta.sql.includes('login_id'))) {
+if (usersTableMeta && (!usersTableMeta.sql.includes('IN (0, 1, 2') || !usersTableMeta.sql.includes('login_id'))) {
   console.log('Migrating users table to support Level 0, login_id, and house_id...');
   const oldCols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
   const hasLoginId = oldCols.includes('login_id');
@@ -177,7 +177,7 @@ if (usersTableMeta && (!usersTableMeta.sql.includes('IN (0, 1, 2)') || !usersTab
         username TEXT UNIQUE NOT NULL,
         email TEXT UNIQUE NOT NULL,
         password_hash TEXT NOT NULL,
-        access_level INTEGER NOT NULL CHECK (access_level IN (0, 1, 2)),
+        access_level INTEGER NOT NULL CHECK (access_level IN (0, 1, 2, 3, 4)),
         status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
         house_id INTEGER DEFAULT NULL,
         created_by INTEGER,
@@ -284,6 +284,67 @@ if (!eventCols.some((c) => c.name === 'total_fund')) {
   db.exec('ALTER TABLE events ADD COLUMN total_fund REAL NOT NULL DEFAULT 0');
 }
 
+// 5. Site settings (About page content, Style Centre theme, report options, directory options)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS site_settings (
+    key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL,
+    updated_by INTEGER,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
+// 6. Gallery (photos & videos uploaded by admins)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS gallery_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    media_type TEXT NOT NULL CHECK (media_type IN ('image', 'video')),
+    url TEXT NOT NULL,
+    caption TEXT NOT NULL DEFAULT '',
+    album TEXT NOT NULL DEFAULT '',
+    uploaded_by INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
+// 7. Event photo albums (photos added to an event after it is published)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS event_photos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL,
+    url TEXT NOT NULL,
+    caption TEXT NOT NULL DEFAULT '',
+    uploaded_by INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+db.exec('CREATE INDEX IF NOT EXISTS idx_event_photos_event ON event_photos(event_id)');
+
+function getSetting(key, fallback = null) {
+  const row = db.prepare('SELECT value_json, updated_at FROM site_settings WHERE key = ?').get(key);
+  if (!row) return fallback;
+  try {
+    return JSON.parse(row.value_json);
+  } catch {
+    return fallback;
+  }
+}
+
+function getSettingMeta(key) {
+  return db.prepare('SELECT updated_at, updated_by FROM site_settings WHERE key = ?').get(key) || null;
+}
+
+function setSetting(key, value, userId = null) {
+  db.prepare(`
+    INSERT INTO site_settings (key, value_json, updated_by, updated_at)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(key) DO UPDATE SET
+      value_json = excluded.value_json,
+      updated_by = excluded.updated_by,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(key, JSON.stringify(value), userId);
+}
+
 // Helper: Generate the next unique numeric login_id
 function getNextLoginId() {
   const row = db.prepare('SELECT MAX(login_id) AS maxId FROM users').get();
@@ -343,12 +404,12 @@ if (userCount === 0) {
 
   insert.run(1000, 'superadmin', 'superadmin@example.com', bcrypt.hashSync('super123', 10), 0);
   insert.run(1001, 'admin', 'admin@example.com', bcrypt.hashSync('admin123', 10), 1);
-  insert.run(1002, 'operator', 'operator@example.com', bcrypt.hashSync('operator123', 10), 2);
+  insert.run(1002, 'operator', 'operator@example.com', bcrypt.hashSync('operator123', 10), 4);
 
   console.log('Seeded default accounts:');
-  console.log('  Level 0 -> ID 1000 / super123');
-  console.log('  Level 1 -> ID 1001 / admin123');
-  console.log('  Level 2 -> ID 1002 / operator123');
+  console.log('  Super Admin  -> ID 1000 / super123');
+  console.log('  Region Admin -> ID 1001 / admin123');
+  console.log('  User         -> ID 1002 / operator123');
 } else {
   const hasLevel0 = db.prepare('SELECT id FROM users WHERE access_level = 0 LIMIT 1').get();
   if (!hasLevel0) {
@@ -384,12 +445,138 @@ if (!subtotalRow) {
   }
 }
 
-// Recalculate every event's total_fund and Subtotal
+// ==========================================
+// CENTRES HIERARCHY: Region -> Zone -> Centre
+// Access levels: 0 Super Admin, 1 Region Admin, 2 Zone Admin, 3 Centre Admin, 4 User
+// ==========================================
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS regions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS zones (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    region_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(region_id, name)
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS centres (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    zone_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+    code TEXT NOT NULL DEFAULT '',
+    address TEXT NOT NULL DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(zone_id, name)
+  )
+`);
+
+// Audit log of privileged admin actions (append-only)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS admin_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_id INTEGER,
+    actor_name TEXT NOT NULL DEFAULT '',
+    actor_login_id INTEGER,
+    actor_level INTEGER,
+    action TEXT NOT NULL,
+    target_type TEXT NOT NULL DEFAULT '',
+    target_id INTEGER,
+    centre_id INTEGER,
+    summary TEXT NOT NULL DEFAULT '',
+    details_json TEXT NOT NULL DEFAULT '{}',
+    ip TEXT NOT NULL DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+db.exec('CREATE INDEX IF NOT EXISTS idx_admin_logs_centre ON admin_logs(centre_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_admin_logs_created ON admin_logs(created_at)');
+
+function addColumnIfMissing(table, column, definition) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+  if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN "${column}" ${definition}`);
+}
+
+addColumnIfMissing('users', 'centre_id', 'INTEGER DEFAULT NULL');
+addColumnIfMissing('users', 'scope_id', 'INTEGER DEFAULT NULL');
+addColumnIfMissing('houses', 'centre_id', 'INTEGER DEFAULT NULL');
+addColumnIfMissing('donations', 'centre_id', 'INTEGER DEFAULT NULL');
+addColumnIfMissing('events', 'centre_id', 'INTEGER DEFAULT NULL');
+addColumnIfMissing('expenses', 'centre_id', 'INTEGER DEFAULT NULL');
+addColumnIfMissing('reports', 'scope_type', "TEXT NOT NULL DEFAULT 'all'");
+addColumnIfMissing('reports', 'scope_id', 'INTEGER DEFAULT NULL');
+addColumnIfMissing('reports', 'scope_label', "TEXT NOT NULL DEFAULT 'All centres'");
+
+db.exec('CREATE INDEX IF NOT EXISTS idx_donations_centre ON donations(centre_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_events_centre ON events(centre_id)');
+
+// One-time migration of an existing single-centre database into the hierarchy
+const schemaVersion = Number(db.prepare('PRAGMA user_version').get().user_version) || 0;
+if (schemaVersion < 1) {
+  // Older users table only allows levels 0-2: rebuild it (keeping every custom column)
+  const usersSql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'").get().sql;
+  const checkRe = /CHECK\s*\(\s*access_level\s+IN\s*\(\s*0\s*,\s*1\s*,\s*2\s*\)\s*\)/i;
+  if (checkRe.test(usersSql)) {
+    console.log('Migrating users table to allow the 5-level admin hierarchy...');
+    const newSql = usersSql
+      .replace(checkRe, 'CHECK (access_level IN (0, 1, 2, 3, 4))')
+      .replace(/CREATE TABLE\s+("?users"?)/i, 'CREATE TABLE users_hier');
+    const colNames = db.prepare('PRAGMA table_info(users)').all().map((c) => `"${c.name}"`).join(', ');
+    db.pragma('foreign_keys = OFF');
+    db.transaction(() => {
+      db.exec(newSql);
+      db.exec(`INSERT INTO users_hier (${colNames}) SELECT ${colNames} FROM users`);
+      db.exec('DROP TABLE users');
+      db.exec('ALTER TABLE users_hier RENAME TO users');
+    })();
+    db.pragma('foreign_keys = ON');
+  }
+
+  db.transaction(() => {
+    let centre = db.prepare('SELECT id FROM centres ORDER BY id LIMIT 1').get();
+    let regionId = null;
+    if (!centre) {
+      regionId = db.prepare("INSERT INTO regions (name) VALUES ('Main Region')").run().lastInsertRowid;
+      const zoneId = db.prepare("INSERT INTO zones (region_id, name) VALUES (?, 'Main Zone')").run(regionId).lastInsertRowid;
+      const centreId = db.prepare("INSERT INTO centres (zone_id, name) VALUES (?, 'Main Centre')").run(zoneId).lastInsertRowid;
+      centre = { id: centreId };
+    } else {
+      regionId = db.prepare(
+        'SELECT z.region_id FROM centres c JOIN zones z ON z.id = c.zone_id WHERE c.id = ?'
+      ).get(centre.id).region_id;
+    }
+
+    // Old Level 2 (operator/member) -> Level 4 User; old Level 1 admin -> Region Admin of the main region
+    db.prepare('UPDATE users SET access_level = 4 WHERE access_level = 2').run();
+    db.prepare('UPDATE users SET scope_id = ? WHERE access_level = 1 AND scope_id IS NULL').run(regionId);
+
+    db.prepare('UPDATE users SET centre_id = ? WHERE centre_id IS NULL AND access_level != 0').run(centre.id);
+    db.prepare('UPDATE users SET centre_id = ? WHERE centre_id IS NULL AND access_level = 0').run(centre.id);
+    db.prepare('UPDATE houses SET centre_id = ? WHERE centre_id IS NULL').run(centre.id);
+    db.prepare('UPDATE donations SET centre_id = ? WHERE centre_id IS NULL').run(centre.id);
+    db.prepare("UPDATE events SET centre_id = ? WHERE centre_id IS NULL AND LOWER(title) != 'subtotal'").run(centre.id);
+    db.prepare('UPDATE expenses SET centre_id = ? WHERE centre_id IS NULL').run(centre.id);
+  })();
+
+  db.exec('PRAGMA user_version = 1');
+}
+
+// Recalculate every event's total_fund (per centre) and the global Subtotal
 function syncEventFunds() {
   db.exec(`
     UPDATE events
     SET total_fund = COALESCE(
-      (SELECT SUM(d.amount) FROM donations d WHERE d.event_tag = events.title),
+      (SELECT SUM(d.amount) FROM donations d
+       WHERE d.event_tag = events.title AND d.centre_id IS events.centre_id),
       0
     )
     WHERE LOWER(title) != 'subtotal'
@@ -408,5 +595,8 @@ db.syncEventFunds = syncEventFunds;
 db.getNextLoginId = getNextLoginId;
 db.getCustomColumns = getCustomColumns;
 db.getSafeTableColumns = getSafeTableColumns;
+db.getSetting = getSetting;
+db.getSettingMeta = getSettingMeta;
+db.setSetting = setSetting;
 
 module.exports = db;
