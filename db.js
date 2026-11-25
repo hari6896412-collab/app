@@ -356,10 +356,20 @@ function getNextLoginId() {
 }
 
 // Helper: Return all custom columns registered for a table (including parsed dropdown options)
+function ensureCustomColumnsRequiredFlag() {
+  const cols = db.prepare('PRAGMA table_info(custom_columns)').all().map((c) => c.name);
+  if (!cols.includes('is_required')) {
+    db.exec('ALTER TABLE custom_columns ADD COLUMN is_required INTEGER NOT NULL DEFAULT 0');
+    // Before this flag existed every people column was mandatory at sign-up: keep that behaviour
+    db.exec("UPDATE custom_columns SET is_required = 1 WHERE table_name = 'users'");
+  }
+}
+ensureCustomColumnsRequiredFlag();
+
 function getCustomColumns(tableName) {
   const rows = db
     .prepare(`
-      SELECT id, table_name, column_name, display_label, data_type, options_json, created_at
+      SELECT id, table_name, column_name, display_label, data_type, options_json, is_required, created_at
       FROM custom_columns
       WHERE table_name = ?
       ORDER BY id ASC
@@ -379,6 +389,7 @@ function getCustomColumns(tableName) {
       display_label: row.display_label,
       data_type: row.data_type,
       options,
+      is_required: Boolean(row.is_required),
       created_at: row.created_at,
     };
   });
@@ -515,6 +526,27 @@ addColumnIfMissing('expenses', 'centre_id', 'INTEGER DEFAULT NULL');
 addColumnIfMissing('reports', 'scope_type', "TEXT NOT NULL DEFAULT 'all'");
 addColumnIfMissing('reports', 'scope_id', 'INTEGER DEFAULT NULL');
 addColumnIfMissing('reports', 'scope_label', "TEXT NOT NULL DEFAULT 'All centres'");
+// Each centre sets its own lower limit for "major donations"
+addColumnIfMissing('centres', 'major_donation_min', 'REAL NOT NULL DEFAULT 10000');
+// Galleries: one general gallery plus one per region, zone and centre
+addColumnIfMissing('gallery_items', 'scope_type', "TEXT NOT NULL DEFAULT 'general'");
+addColumnIfMissing('gallery_items', 'scope_id', 'INTEGER DEFAULT NULL');
+// The admin area of whoever took a logged action (decides which higher admins may read it)
+addColumnIfMissing('admin_logs', 'actor_scope_id', 'INTEGER DEFAULT NULL');
+
+// Saved census records
+db.exec(`
+  CREATE TABLE IF NOT EXISTS census_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope_type TEXT NOT NULL,
+    scope_id INTEGER,
+    scope_label TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    data_json TEXT NOT NULL,
+    taken_by INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
 
 db.exec('CREATE INDEX IF NOT EXISTS idx_donations_centre ON donations(centre_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_events_centre ON events(centre_id)');
@@ -568,6 +600,21 @@ if (schemaVersion < 1) {
   })();
 
   db.exec('PRAGMA user_version = 1');
+}
+
+// Version 2: per-centre major-donation limits, scoped galleries, scoped admin logs
+if (Number(db.prepare('PRAGMA user_version').get().user_version) < 2) {
+  db.transaction(() => {
+    const saved = getSetting('report_options', null);
+    const oldLimit = saved && Number.isFinite(Number(saved.major_donation_min)) ? Number(saved.major_donation_min) : 10000;
+    db.prepare('UPDATE centres SET major_donation_min = ?').run(oldLimit);
+    db.exec(`
+      UPDATE admin_logs
+      SET actor_scope_id = (SELECT u.scope_id FROM users u WHERE u.id = admin_logs.actor_id)
+      WHERE actor_scope_id IS NULL
+    `);
+  })();
+  db.exec('PRAGMA user_version = 2');
 }
 
 // Recalculate every event's total_fund (per centre) and the global Subtotal

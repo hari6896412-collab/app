@@ -269,7 +269,10 @@ async function buildReportPdf({ report, majorDonations, threshold, theme }) {
   ]);
 
   // Major donations
-  w.heading(`Donations above ${rupees(threshold)}`);
+  const majorTitle = threshold === null || threshold === undefined
+    ? "Major donations (above each centre's own limit)"
+    : `Donations above ${rupees(threshold)}`;
+  w.heading(majorTitle);
   const majorTotal = majorDonations.reduce((sum, d) => sum + Number(d.amount || 0), 0);
   const multiCentre = report.scope_type && report.scope_type !== 'centre';
   w.table(
@@ -293,7 +296,9 @@ async function buildReportPdf({ report, majorDonations, threshold, theme }) {
       totalRow: majorDonations.length
         ? ['Total', `${majorDonations.length} donation(s)`, '', '', '', rupees(majorTotal)]
         : null,
-      emptyText: `No donations above ${rupees(threshold)} in this period.`,
+      emptyText: threshold === null || threshold === undefined
+        ? 'No major donations in this period.'
+        : `No donations above ${rupees(threshold)} in this period.`,
     }
   );
   w.space(3);

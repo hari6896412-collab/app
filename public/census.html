@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Census</title>
+  <link rel="stylesheet" href="/style.css" />
+  <script src="/theme.js"></script>
+  <style>
+    .census-controls { display: grid; grid-template-columns: 2fr auto auto; gap: 10px; align-items: end; }
+    .census-controls button { margin-top: 0; white-space: nowrap; }
+    .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-top: 16px; }
+    .tile { padding: 14px 16px; border: 1px solid var(--border-color); border-radius: var(--radius-md); background: #fff; box-shadow: var(--shadow-xs); }
+    .tile .tile-label { font-size: 0.74rem; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+    .tile .tile-value { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 1.6rem; font-weight: 800; margin-top: 4px; }
+    .breakdown-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; margin-top: 12px; }
+    .breakdown { padding: 14px 16px; border: 1px solid var(--border-color); border-radius: var(--radius-md); background: #fff; }
+    .breakdown h4 { font-size: 0.95rem; margin-bottom: 10px; }
+    .bar-row { display: grid; grid-template-columns: minmax(80px, 38%) 1fr 64px; gap: 8px; align-items: center; font-size: 0.84rem; margin-top: 6px; }
+    .bar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .bar-track { height: 10px; background: #f1ebe6; border-radius: 999px; overflow: hidden; }
+    .bar-fill { height: 100%; background: var(--brand-gradient); border-radius: 999px; }
+    .bar-num { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .bar-missing { font-size: 0.78rem; color: var(--muted); margin-top: 8px; }
+    .saved-banner { margin-top: 14px; padding: 10px 14px; border-radius: var(--radius-sm); background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412; font-weight: 600; font-size: 0.88rem; display: flex; justify-content: space-between; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .saved-banner button { margin: 0; }
+    @media (max-width: 700px) { .census-controls { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header></header>
+
+  <div class="container" style="max-width: 1200px;">
+    <div class="section">
+      <div class="section-head">
+        <h2>Census</h2>
+        <span class="total-pill" id="rolePill">…</span>
+      </div>
+      <p class="hint">Count and describe the people in your area — by centre, zone, region or the whole community. Figures come from members’ approved accounts and the details on their profiles.</p>
+
+      <div class="census-controls">
+        <div>
+          <label for="scopeSelect">Area</label>
+          <select id="scopeSelect"></select>
+        </div>
+        <button type="button" id="runBtn">Run census</button>
+        <button type="button" class="btn-soft" id="csvBtn">⬇ People list (CSV)</button>
+      </div>
+      <div id="censusMsg" class="message"></div>
+      <div id="savedBanner"></div>
+    </div>
+
+    <div id="results"></div>
+
+    <div class="section" id="saveSection" hidden style="margin-top: 20px;">
+      <h3>Save this census</h3>
+      <p class="hint" style="margin: 4px 0 0;">Saving keeps a dated copy of these figures so you can compare with future censuses.</p>
+      <div style="display:flex; gap: 8px; flex-wrap: wrap; align-items: flex-end;">
+        <div style="flex: 1; min-width: 220px;">
+          <label for="saveTitle">Title</label>
+          <input id="saveTitle" placeholder="e.g. Annual census 2026" maxlength="100" />
+        </div>
+        <button type="button" id="saveBtn" style="margin-top: 0;">Save census record</button>
+      </div>
+    </div>
+
+    <div class="section" style="margin-top: 20px;">
+      <div class="section-head">
+        <h3>Saved census records</h3>
+        <span class="stat-sub" id="recordCount"></span>
+      </div>
+      <div class="table-wrap" style="margin-top: 10px;">
+        <table>
+          <thead><tr><th>Title</th><th>Area</th><th>People</th><th>Families</th><th>Taken by</th><th>Date</th><th></th></tr></thead>
+          <tbody id="recordsBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script src="/access.js"></script>
+  <script>
+    const { token, esc } = window.Access;
+    if (!token) window.location.href = '/index.html';
+    else if (!window.Access.isAdmin) window.location.href = '/';
+
+    let current = null; // census currently shown
+
+    function logout() {
+      localStorage.clear();
+      window.location.href = '/index.html';
+    }
+
+    function showMsg(text, kind) {
+      const m = document.getElementById('censusMsg');
+      m.textContent = text;
+      m.className = `message ${kind || ''}`;
+    }
+
+    function formatDate(value) {
+      const d = new Date(String(value).includes('T') ? value : String(value).replace(' ', 'T') + 'Z');
+      return isNaN(d) ? value : d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+    }
+
+    function scopeParams() {
+      const [scope_type, scope_id] = document.getElementById('scopeSelect').value.split(':');
+      return { scope_type, scope_id: scope_id || '' };
+    }
+
+    function bars(values, missing, total) {
+      if (!values.length) return '<p class="hint" style="margin:0;">No answers recorded yet.</p>';
+      const max = Math.max(...values.map((v) => v.count), 1);
+      return values.map((v) => `
+        <div class="bar-row" title="${esc(v.value)}: ${v.count}">
+          <span class="bar-label">${esc(v.value)}</span>
+          <span class="bar-track"><span class="bar-fill" style="width:${(v.count / max) * 100}%; display:block;"></span></span>
+          <span class="bar-num">${v.count}${total ? ` <span class="stat-sub">${Math.round((v.count / total) * 100)}%</span>` : ''}</span>
+        </div>`).join('') +
+        (missing ? `<div class="bar-missing">Not filled in: ${missing}</div>` : '');
+    }
+
+    function render(data) {
+      current = data;
+      const t = data.totals;
+      const tiles = [
+        ['People', t.people],
+        ['Families', t.families],
+        ['Avg. family size', t.average_family_size],
+        ['Not in a family', t.people_without_family],
+        ['Pending sign-ups', t.pending_signups],
+        ['Centres', t.centres],
+      ];
+      if (data.age_groups && data.age_groups.average_age !== null) tiles.splice(3, 0, ['Average age', data.age_groups.average_age]);
+
+      const byCentre = data.by_centre.length > 1 ? `
+        <div class="section" style="margin-top: 20px;">
+          <h3>By centre</h3>
+          <div class="table-wrap" style="margin-top: 10px;">
+            <table>
+              <thead><tr><th>Centre</th><th>Zone</th><th>Region</th><th>People</th><th>Families</th><th>Not in a family</th><th>Pending</th></tr></thead>
+              <tbody>${data.by_centre.map((c) => `
+                <tr><td><b>${esc(c.centre)}</b></td><td>${esc(c.zone)}</td><td>${esc(c.region)}</td>
+                <td>${c.people}</td><td>${c.families}</td><td>${c.without_family}</td><td>${c.pending}</td></tr>`).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>` : '';
+
+      const peopleCards = [
+        data.age_groups ? { label: `Age (from ${data.age_groups.field})`, values: data.age_groups.values, missing: data.age_groups.missing } : null,
+        { label: 'Roles', values: data.roles, missing: 0 },
+        ...data.people_breakdowns,
+      ].filter(Boolean);
+
+      document.getElementById('results').innerHTML = `
+        <div class="section" style="margin-top: 20px;">
+          <div class="section-head">
+            <h3>${esc(data.scope_label)}</h3>
+            <span class="stat-sub">As of ${formatDate(data.generated_at)}</span>
+          </div>
+          <div class="tiles">
+            ${tiles.map(([label, value]) => `<div class="tile"><div class="tile-label">${esc(label)}</div><div class="tile-value">${esc(value)}</div></div>`).join('')}
+          </div>
+        </div>
+        ${byCentre}
+        <div class="section" style="margin-top: 20px;">
+          <h3>People</h3>
+          <div class="breakdown-grid">
+            ${peopleCards.map((b) => `<div class="breakdown"><h4>${esc(b.label)}</h4>${bars(b.values, b.missing, t.people)}</div>`).join('')}
+          </div>
+        </div>
+        <div class="section" style="margin-top: 20px;">
+          <h3>Families</h3>
+          <div class="breakdown-grid">
+            <div class="breakdown"><h4>Family size (members)</h4>${bars(data.family_sizes, 0, t.families)}</div>
+            ${data.family_breakdowns.map((b) => `<div class="breakdown"><h4>${esc(b.label)}</h4>${bars(b.values, b.missing, t.families)}</div>`).join('')}
+          </div>
+        </div>`;
+    }
+
+    async function runCensus() {
+      document.getElementById('savedBanner').innerHTML = '';
+      showMsg('Counting…', '');
+      const res = await fetch(`/api/census?${new URLSearchParams(scopeParams())}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.status === 401) return logout();
+      const data = await res.json();
+      if (!res.ok) return showMsg(data.error || 'Could not run the census', 'error');
+      showMsg('', '');
+      render(data);
+      document.getElementById('saveSection').hidden = false;
+    }
+
+    async function downloadCsv() {
+      const res = await fetch(`/api/census/export?${new URLSearchParams(scopeParams())}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.status === 401) return logout();
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        return showMsg(data.error || 'Could not download', 'error');
+      }
+      const match = (res.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(await res.blob());
+      a.download = match ? match[1] : 'census.csv';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    }
+
+    async function saveRecord() {
+      const res = await fetch('/api/census/records', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ ...scopeParams(), title: document.getElementById('saveTitle').value }),
+      });
+      if (res.status === 401) return logout();
+      const data = await res.json();
+      showMsg(res.ok ? data.message : data.error || 'Could not save', res.ok ? 'success' : 'error');
+      if (res.ok) {
+        document.getElementById('saveTitle').value = '';
+        loadRecords();
+      }
+    }
+
+    async function loadRecords() {
+      const res = await fetch('/api/census/records', { headers: { Authorization: `Bearer ${token}` } });
+      if (res.status === 401) return logout();
+      const data = await res.json();
+      const records = data.records || [];
+      document.getElementById('recordCount').textContent = `${records.length} saved`;
+      document.getElementById('recordsBody').innerHTML = records.length
+        ? records.map((r) => `
+            <tr>
+              <td><b>${esc(r.title)}</b></td>
+              <td>${esc(r.scope_label)}</td>
+              <td>${r.people ?? '—'}</td>
+              <td>${r.families ?? '—'}</td>
+              <td>${esc(r.taken_by)}</td>
+              <td>${formatDate(r.created_at)}</td>
+              <td style="white-space:nowrap;">
+                <button class="btn-approve" onclick="viewRecord(${r.id})">View</button>
+                <button class="btn-reject" onclick="deleteRecord(${r.id})">Delete</button>
+              </td>
+            </tr>`).join('')
+        : '<tr><td colspan="7" class="empty-row">No saved censuses yet. Run one above and save it.</td></tr>';
+    }
+
+    async function viewRecord(id) {
+      const res = await fetch(`/api/census/records/${id}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.status === 401) return logout();
+      const data = await res.json();
+      if (!res.ok) return showMsg(data.error || 'Could not open', 'error');
+      render(data.data);
+      document.getElementById('saveSection').hidden = true;
+      document.getElementById('savedBanner').innerHTML = `
+        <div class="saved-banner">
+          <span>Viewing saved census “${esc(data.title)}” from ${formatDate(data.created_at)}.</span>
+          <button type="button" class="btn-soft" onclick="runCensus()">Show today’s figures</button>
+        </div>`;
+      document.getElementById('results').scrollIntoView({ behavior: 'smooth' });
+    }
+
+    async function deleteRecord(id) {
+      if (!confirm('Delete this saved census?')) return;
+      const res = await fetch(`/api/census/records/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+      if (res.status === 401) return logout();
+      loadRecords();
+    }
+
+    async function init() {
+      const h = await window.Access.hierarchy();
+      if (!h) return showMsg('Could not load your areas', 'error');
+      document.getElementById('rolePill').textContent = h.me.role_label;
+      const opts = [];
+      if (h.me.is_super) opts.push(['all:', 'Whole community']);
+      for (const r of h.regions) {
+        if (r.can_manage) opts.push([`region:${r.id}`, `Region: ${r.name}`]);
+        for (const z of r.zones) {
+          if (z.can_manage) opts.push([`zone:${z.id}`, `${r.can_manage ? '\u00a0\u00a0' : ''}Zone: ${z.name}`]);
+          for (const c of z.centres) {
+            if (c.can_manage) opts.push([`centre:${c.id}`, `${z.can_manage ? '\u00a0\u00a0\u00a0\u00a0' : ''}Centre: ${c.name} (${z.name})`]);
+          }
+        }
+      }
+      document.getElementById('scopeSelect').innerHTML = opts.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('');
+      if (opts.length) runCensus();
+      loadRecords();
+    }
+
+    document.getElementById('runBtn').addEventListener('click', runCensus);
+    document.getElementById('scopeSelect').addEventListener('change', runCensus);
+    document.getElementById('csvBtn').addEventListener('click', downloadCsv);
+    document.getElementById('saveBtn').addEventListener('click', saveRecord);
+
+    init();
+  </script>
+  <script src="/nav.js"></script>
+</body>
+</html>

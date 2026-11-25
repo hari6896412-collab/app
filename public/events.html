@@ -11,15 +11,6 @@
   <header></header>
 
   <div class="container">
-    <!-- Separate Subtotal Event Banner -->
-    <div class="subtotal-card">
-      <div>
-        <h2>Subtotal (Total Funds)</h2>
-        <p class="subtotal-sub" id="subtotalMeta">Updated automatically from all donations</p>
-      </div>
-      <div class="subtotal-amount" id="subtotalAmount">₹0</div>
-    </div>
-
     <div class="section" style="margin-bottom: 24px;">
       <div class="section-head">
         <h2>Community Events</h2>
@@ -224,8 +215,6 @@
     async function loadEvents() {
       const feed = document.getElementById('eventsFeed');
       const countEl = document.getElementById('eventCount');
-      const subtotalEl = document.getElementById('subtotalAmount');
-      const subtotalMeta = document.getElementById('subtotalMeta');
       const msg = document.getElementById('eventsMsg');
       msg.className = 'message';
 
@@ -242,11 +231,6 @@
           msg.className = 'message error';
           return;
         }
-
-        const totalAll = data.subtotal ? data.subtotal.total_fund : 0;
-        const generalFund = data.general_fund || 0;
-        subtotalEl.textContent = formatRupees(totalAll);
-        subtotalMeta.textContent = `General Donations: ${formatRupees(generalFund)}  ·  Event Donations: ${formatRupees(totalAll - generalFund)}`;
 
         eventsById = new Map(data.events.map((ev) => [ev.id, ev]));
         lastData = data;

@@ -40,9 +40,11 @@
         ...(isAdmin
           ? [
               { href: '/houses.html', label: 'Houses & Donor Lookup' },
+              { href: '/census.html', label: 'Census' },
               { href: '/centres.html', label: 'Centres', extraClass: 'menu-item-admin' },
               { href: '/admin-db.html', label: 'Database Control', extraClass: 'menu-item-admin' },
-              { href: '/admin-logs.html', label: 'Admin Log', extraClass: 'menu-item-admin' },
+              // Logs show subordinate admins' actions, so Centre Admins (who have none) don't get this page
+              ...(accessLevel <= 2 ? [{ href: '/admin-logs.html', label: 'Admin Log', extraClass: 'menu-item-admin' }] : []),
               ...(isSuper ? [{ href: '/style-centre.html', label: 'Style Centre', extraClass: 'menu-item-admin' }] : []),
               { href: '/upload-event.html', label: '+ Upload Event', extraClass: 'menu-item-admin' },
             ]
@@ -50,7 +52,6 @@
       ]
     : [
         { href: '/', label: 'About' },
-        { href: '/funds.html', label: 'Funds' },
         { href: '/index.html', label: 'Sign In' },
         { href: '/signup.html', label: 'Sign Up', extraClass: 'menu-item-admin' },
       ];

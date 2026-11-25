@@ -16,7 +16,7 @@
         <h2>Event Funds</h2>
         <span class="total-pill" id="eventCount">…</span>
       </div>
-      <p class="hint">Public transparency ledger — money raised by each event, visible to everyone.</p>
+      <p class="hint">Transparency ledger for members — money raised by each event, grouped by centre.</p>
 
       <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
         <label for="centreFilter" style="margin:0;">Centre</label>
@@ -40,6 +40,9 @@
     function formatRupees(val) {
       return '₹' + Number(val || 0).toLocaleString('en-IN');
     }
+
+    const token = localStorage.getItem('token');
+    if (!token) window.location.href = '/index.html';
 
     let events = [];
 
@@ -94,7 +97,12 @@
       msg.className = 'message';
 
       try {
-        const res = await fetch('/api/funds');
+        const res = await fetch('/api/funds', { headers: { Authorization: `Bearer ${token}` } });
+        if (res.status === 401) {
+          localStorage.clear();
+          window.location.href = '/index.html';
+          return;
+        }
         const data = await res.json();
 
         if (!res.ok) {

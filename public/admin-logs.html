@@ -99,7 +99,7 @@
   <script>
     const { token, esc } = window.Access;
     if (!token) window.location.href = '/index.html';
-    else if (!window.Access.isAdmin) window.location.href = '/';
+    else if (window.Access.level > 2) window.location.href = '/'; // Super, Region and Zone Admins only
 
     const PAGE = 100;
     let rows = [];
@@ -217,8 +217,9 @@
     document.getElementById('csvBtn').addEventListener('click', downloadCsv);
 
     if (!window.Access.isSuper) {
-      document.getElementById('logScopeHint').textContent =
-        'Actions taken in your centres, plus your own actions. Entries cannot be edited or deleted.';
+      document.getElementById('logScopeHint').textContent = window.Access.level === 1
+        ? 'Actions taken by the Zone and Centre Admins in your region. Entries cannot be edited or deleted.'
+        : 'Actions taken by the Centre Admins in your zone. Entries cannot be edited or deleted.';
     }
 
     load(true);

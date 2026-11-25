@@ -44,6 +44,12 @@
             <label for="schemaOptions">Dropdown Options (comma-separated)</label>
             <input type="text" id="schemaOptions" placeholder="e.g., A+, A-, B+, O+" />
           </div>
+          <div id="schemaRequiredWrap">
+            <label class="check-row" style="margin-top: 30px;">
+              <input type="checkbox" id="schemaRequired" />
+              Mandatory when signing up
+            </label>
+          </div>
           <button type="submit" style="background: var(--lavender);">+ Add Column</button>
         </div>
         <div id="schemaMsg" class="message"></div>
@@ -142,6 +148,11 @@
       return val === null || val === undefined || val === '' ? '—' : escapeHtml(val);
     }
 
+    // Only people columns appear on the sign-up form, so only they can be mandatory
+    document.getElementById('schemaTable').addEventListener('change', (e) => {
+      document.getElementById('schemaRequiredWrap').style.display = e.target.value === 'users' ? 'block' : 'none';
+    });
+
     function toggleSchemaOptions() {
       const isSelect = document.getElementById('schemaDataType').value === 'select';
       const wrap = document.getElementById('schemaOptionsWrap');
@@ -182,6 +193,20 @@
       return `<input id="${inputId}" type="${escapeHtml(type)}"${stepAttr} value="${safeVal}" />`;
     }
 
+    async function setColumnRequired(column, isRequired) {
+      const msg = document.getElementById('schemaMsg');
+      const res = await fetch(`/api/schema/users/columns/${encodeURIComponent(column)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ is_required: isRequired }),
+      });
+      if (res.status === 401) return logout();
+      const data = await res.json();
+      msg.textContent = res.ok ? data.message : data.error || 'Could not update';
+      msg.className = `message ${res.ok ? 'success' : 'error'}`;
+      loadTabData();
+    }
+
     function renderExistingCustomColumns() {
       if (accessLevel !== 0) return;
       const wrap = document.getElementById('existingColsWrap');
@@ -197,6 +222,9 @@
               <span class="custom-col-chip">
                 ${escapeHtml(c.display_label)}
                 <span class="chip-type-tag">${escapeHtml(c.data_type || 'text')}</span>
+                ${table === 'users' ? `<label class="chip-type-tag" style="cursor:pointer;" title="Mandatory when signing up">
+                  <input type="checkbox" ${c.is_required ? 'checked' : ''}
+                    onchange="setColumnRequired('${escapeHtml(c.column_name)}', this.checked)" /> required</label>` : ''}
                 <button
                   type="button"
                   class="chip-remove-btn"
@@ -276,11 +304,12 @@
       const options = data_type === 'select'
         ? document.getElementById('schemaOptions').value
         : '';
+      const is_required = table === 'users' && document.getElementById('schemaRequired').checked;
 
       const res = await fetch(`/api/schema/${table}/columns`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ label, data_type, options }),
+        body: JSON.stringify({ label, data_type, options, is_required }),
       });
       if (res.status === 401) return logout();
       const data = await res.json();
@@ -367,9 +396,8 @@
             <td>${escapeHtml(u.house_name || '—')}</td>
             ${cache.userCols.map((c) => `<td>${displayCell(u[c.column_name])}</td>`).join('')}
             <td style="white-space:nowrap;">
-              ${u.can_manage ? `<button class="btn-approve" onclick="openEditUser(${u.id})">Edit</button>
-              <button class="btn-reject" onclick="deleteRow('/api/users/${u.id}', 'Delete user ${escapeHtml(u.username)}?')">Delete</button>`
-              : `<span class="stat-sub">${u.is_self ? 'You' : 'View only'}</span>`}
+              <button class="btn-approve" onclick="openEditUser(${u.id})">Edit</button>
+              <button class="btn-reject" onclick="deleteRow('/api/users/${u.id}', 'Delete user ${escapeHtml(u.username)}?')">Delete</button>
             </td>
           </tr>
         `).join('');

@@ -63,6 +63,10 @@
             <label for="newCentreAddress">Address (optional)</label>
             <input id="newCentreAddress" maxlength="200" />
           </div>
+          <div>
+            <label for="newCentreLimit">Major-donation limit (₹)</label>
+            <input id="newCentreLimit" type="number" min="0" step="1" value="10000" />
+          </div>
           <button type="submit">Add centre</button>
         </div>
       </form>
@@ -159,7 +163,7 @@
               </div>
               <div class="table-wrap" style="margin-top: 10px;">
                 <table>
-                  <thead><tr><th>Centre</th><th>Code</th><th>Centre Admins</th><th>Members</th><th>Houses</th><th>Events</th><th>Donations</th><th></th></tr></thead>
+                  <thead><tr><th>Centre</th><th>Code</th><th>Centre Admins</th><th>Members</th><th>Houses</th><th>Events</th><th>Donations</th><th>Major ≥</th><th></th></tr></thead>
                   <tbody>
                     ${z.centres.length ? z.centres.map((c) => `
                       <tr>
@@ -170,11 +174,12 @@
                         <td>${c.house_count}</td>
                         <td>${c.event_count}</td>
                         <td class="amount-cell">${rupees(c.donation_total)}</td>
+                        <td>${rupees(c.major_donation_min)}</td>
                         <td style="white-space:nowrap;">
                           ${c.can_edit_details ? `<button class="btn-approve" data-edit-centre="${c.id}">Edit</button>` : ''}
                           ${c.can_move_or_delete ? `<button class="btn-reject" data-del-centre="${c.id}">Delete</button>` : ''}
                         </td>
-                      </tr>`).join('') : '<tr><td colspan="8" class="empty-row">No centres in this zone yet.</td></tr>'}
+                      </tr>`).join('') : '<tr><td colspan="9" class="empty-row">No centres in this zone yet.</td></tr>'}
                   </tbody>
                 </table>
               </div>
@@ -245,6 +250,7 @@
         name: document.getElementById('newCentreName').value,
         code: document.getElementById('newCentreCode').value,
         address: document.getElementById('newCentreAddress').value,
+        major_donation_min: document.getElementById('newCentreLimit').value,
       });
       showMsg('addMsg', r.json.message || r.json.error, r.ok);
       if (r.ok) {
@@ -273,6 +279,7 @@
             <div><label>Name</label><input id="ec_name" value="${esc(c.name)}" required maxlength="80" /></div>
             <div><label>Code</label><input id="ec_code" value="${esc(c.code || '')}" maxlength="30" /></div>
             <div><label>Address</label><input id="ec_addr" value="${esc(c.address || '')}" maxlength="200" /></div>
+            <div><label>Major-donation limit (₹)</label><input id="ec_limit" type="number" min="0" step="1" value="${Number(c.major_donation_min)}" /></div>
             ${c.can_move_or_delete ? `<div><label>Zone</label><select id="ec_zone">${zoneOpts.join('')}</select></div>` : ''}
           </div>
           <div class="builder-toolbar" style="margin-bottom:0;">
@@ -289,6 +296,7 @@
           name: document.getElementById('ec_name').value,
           code: document.getElementById('ec_code').value,
           address: document.getElementById('ec_addr').value,
+          major_donation_min: document.getElementById('ec_limit').value,
         };
         const zoneSel = document.getElementById('ec_zone');
         if (zoneSel) body.zone_id = Number(zoneSel.value);

@@ -9,7 +9,7 @@ const db = require('./db');
 const { requireAuth, requireLevel, requireAdmin, requireSuper } = require('./auth');
 const H = require('./hierarchy');
 const { sendDonationAcknowledgement } = require('./mailer');
-const { registerFeatureRoutes, getMajorDonationMin, isUploadUrl, makeFileRemover, isUrlStillUsed } = require('./features');
+const { registerFeatureRoutes, isUploadUrl, makeFileRemover, isUrlStillUsed } = require('./features');
 const { buildReportPdf } = require('./report-pdf');
 
 if (!process.env.JWT_SECRET) {
@@ -365,15 +365,18 @@ app.post('/api/schema/:table/columns', requireAuth, requireLevel(0), (req, res) 
     return res.status(409).json({ error: `Column "${colName}" already exists in ${table}.` });
   }
 
+  // Only people (users) columns appear on the sign-up form, so only they can be mandatory
+  const isRequired = table === 'users' && Boolean(req.body?.is_required) ? 1 : 0;
+
   db.exec(`ALTER TABLE ${table} ADD COLUMN "${colName}" ${typeDef.sqlType}`);
   db.prepare(`
-    INSERT INTO custom_columns (table_name, column_name, display_label, data_type, options_json, created_by)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(table, colName, displayLabel, dataType, JSON.stringify(cleanOptions), req.user.id);
+    INSERT INTO custom_columns (table_name, column_name, display_label, data_type, options_json, is_required, created_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(table, colName, displayLabel, dataType, JSON.stringify(cleanOptions), isRequired, req.user.id);
 
   H.logAction(req, 'schema.add_column', {
     targetType: 'column', summary: `Added ${typeDef.label} column "${displayLabel}" to ${table}`,
-    details: { table, column: colName, data_type: dataType, options: cleanOptions },
+    details: { table, column: colName, data_type: dataType, options: cleanOptions, mandatory_at_signup: Boolean(isRequired) },
   });
 
   res.status(201).json({
@@ -386,6 +389,21 @@ app.post('/api/schema/:table/columns', requireAuth, requireLevel(0), (req, res) 
       options: cleanOptions,
     },
   });
+});
+
+// Super Admin: switch "mandatory at sign-up" on or off for an existing people column
+app.patch('/api/schema/users/columns/:columnName', requireAuth, requireSuper, (req, res) => {
+  const col = db.getCustomColumns('users').find((c) => c.column_name === req.params.columnName);
+  if (!col) return res.status(404).json({ error: 'Column not found' });
+  const isRequired = req.body && req.body.is_required ? 1 : 0;
+  db.prepare("UPDATE custom_columns SET is_required = ? WHERE table_name = 'users' AND column_name = ?")
+    .run(isRequired, col.column_name);
+  H.logAction(req, 'schema.update_column', {
+    targetType: 'column',
+    summary: `Made "${col.display_label}" ${isRequired ? 'mandatory' : 'optional'} at sign-up`,
+    details: { table: 'users', column: col.column_name, mandatory_at_signup: Boolean(isRequired) },
+  });
+  res.json({ message: `"${col.display_label}" is now ${isRequired ? 'mandatory' : 'optional'} when signing up.` });
 });
 
 app.delete('/api/schema/:table/columns/:columnName', requireAuth, requireLevel(0), (req, res) => {
@@ -525,7 +543,7 @@ app.post('/api/signup', (req, res) => {
 
   for (const col of customCols) {
     const rawVal = customFieldsInput[col.column_name] ?? body[col.column_name];
-    const check = validateCustomValue(col, rawVal, true);
+    const check = validateCustomValue(col, rawVal, col.is_required);
     if (check.error) return res.status(400).json({ error: check.error });
     colNames.push(`"${col.column_name}"`);
     values.push(check.value);
@@ -580,7 +598,7 @@ app.get('/api/hierarchy', requireAuth, (req, res) => {
   const regions = db.prepare('SELECT id, name, created_at FROM regions ORDER BY name COLLATE NOCASE').all();
   const zones = db.prepare('SELECT id, region_id, name, created_at FROM zones ORDER BY name COLLATE NOCASE').all();
   const centres = db.prepare(`
-    SELECT c.id, c.zone_id, c.name, c.code, c.address, c.created_at,
+    SELECT c.id, c.zone_id, c.name, c.code, c.address, c.major_donation_min, c.created_at,
       (SELECT COUNT(*) FROM users u WHERE u.centre_id = c.id) AS member_count,
       (SELECT COUNT(*) FROM houses h WHERE h.centre_id = c.id) AS house_count,
       (SELECT COUNT(*) FROM events e WHERE e.centre_id = c.id) AS event_count,
@@ -640,6 +658,13 @@ app.get('/api/hierarchy', requireAuth, (req, res) => {
     managed_centre_ids: managedCentres === null ? flat.map((c) => c.id) : managedCentres,
   });
 });
+
+// Amount >= 0 (rounded to paise); `fallback` when not given; null when invalid
+function parseLimit(raw, fallback) {
+  if (raw === undefined || raw === null || raw === '') return fallback;
+  const num = Math.round(Number(raw) * 100) / 100;
+  return Number.isFinite(num) && num >= 0 ? num : null;
+}
 
 function cleanName(raw, max = 80) {
   return String(raw || '').trim().replace(/\s+/g, ' ').slice(0, max);
@@ -765,8 +790,10 @@ app.post('/api/centres', requireAuth, requireAdmin, (req, res) => {
     return res.status(403).json({ error: 'You can only add centres inside your own zone or region.' });
   }
   try {
-    const id = db.prepare('INSERT INTO centres (zone_id, name, code, address) VALUES (?, ?, ?, ?)')
-      .run(zone.id, name, cleanName(body.code, 30), cleanName(body.address, 200)).lastInsertRowid;
+    const limit = parseLimit(body.major_donation_min, 10000);
+    if (limit === null) return res.status(400).json({ error: 'Major-donation limit must be 0 or more' });
+    const id = db.prepare('INSERT INTO centres (zone_id, name, code, address, major_donation_min) VALUES (?, ?, ?, ?, ?)')
+      .run(zone.id, name, cleanName(body.code, 30), cleanName(body.address, 200), limit).lastInsertRowid;
     H.logAction(req, 'centre.create', {
       targetType: 'centre', targetId: id, centreId: id, summary: `Created centre "${name}" in ${zone.name}`,
     });
@@ -788,6 +815,9 @@ app.put('/api/centres/:id', requireAuth, requireAdmin, (req, res) => {
   if (!name) return res.status(400).json({ error: 'Centre name is required' });
   const code = body.code !== undefined ? cleanName(body.code, 30) : centre.code;
   const address = body.address !== undefined ? cleanName(body.address, 200) : centre.address;
+  const currentLimit = db.prepare('SELECT major_donation_min FROM centres WHERE id = ?').get(centre.id).major_donation_min;
+  const majorMin = parseLimit(body.major_donation_min, currentLimit);
+  if (majorMin === null) return res.status(400).json({ error: 'Major-donation limit must be 0 or more' });
 
   let zoneId = centre.zone_id;
   if (body.zone_id !== undefined && Number(body.zone_id) !== centre.zone_id) {
@@ -800,8 +830,8 @@ app.put('/api/centres/:id', requireAuth, requireAdmin, (req, res) => {
   }
 
   try {
-    db.prepare('UPDATE centres SET name = ?, code = ?, address = ?, zone_id = ? WHERE id = ?')
-      .run(name, code, address, zoneId, centre.id);
+    db.prepare('UPDATE centres SET name = ?, code = ?, address = ?, zone_id = ?, major_donation_min = ? WHERE id = ?')
+      .run(name, code, address, zoneId, majorMin, centre.id);
   } catch (err) {
     if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') return res.status(409).json({ error: 'That zone already has a centre with this name' });
     throw err;
@@ -809,8 +839,8 @@ app.put('/api/centres/:id', requireAuth, requireAdmin, (req, res) => {
   H.logAction(req, 'centre.update', {
     targetType: 'centre', targetId: centre.id, centreId: centre.id, summary: `Updated centre "${centre.name}"`,
     details: {
-      before: { name: centre.name, code: centre.code, address: centre.address, zone_id: centre.zone_id },
-      after: { name, code, address, zone_id: zoneId },
+      before: { name: centre.name, code: centre.code, address: centre.address, zone_id: centre.zone_id, major_donation_min: currentLimit },
+      after: { name, code, address, zone_id: zoneId, major_donation_min: majorMin },
     },
   });
   res.json({ message: 'Centre updated.' });
@@ -885,8 +915,9 @@ app.get('/api/users', requireAuth, requireAdmin, (req, res) => {
     ORDER BY u.id ASC
   `).all();
 
+  // Database Control: only accounts under this admin's jurisdiction
   const users = all
-    .filter((u) => H.isSuper(req.user) || u.id === req.user.id || gate.inScope(u.centre_id) || gate.canManage(u))
+    .filter((u) => u.id !== req.user.id && gate.canManage(u))
     .map((u) => {
       for (const c of customCols) {
         if (u[c.column_name] === undefined) u[c.column_name] = c.data_type === 'number' ? null : '';
@@ -896,12 +927,22 @@ app.get('/api/users', requireAuth, requireAdmin, (req, res) => {
         ...u,
         centre_name: c ? c.name : '',
         role_label: H.roleLabel(u.access_level, u.scope_id),
-        can_manage: u.id !== req.user.id && gate.canManage(u),
-        is_self: u.id === req.user.id,
+        can_manage: true,
       };
     });
 
   res.json({ count: users.length, custom_columns: customCols, users });
+});
+
+// Light list of everyone whose home centre is in this admin's area (to pick a donor for an offline donation)
+app.get('/api/users/donors', requireAuth, requireAdmin, (req, res) => {
+  const scope = H.scopeSql(req.user, 'centre_id');
+  const users = db.prepare(`
+    SELECT id, login_id, username, email, centre_id FROM users
+    WHERE status = 'approved' AND ${scope.sql}
+    ORDER BY username COLLATE NOCASE
+  `).all(...scope.args);
+  res.json({ users });
 });
 
 // Validate role / scope / centre / house for a new or edited account
@@ -1528,29 +1569,36 @@ app.get('/api/admin/donations', requireAuth, requireAdmin, (req, res) => {
   res.json({ total, count: donations.length, donations });
 });
 
-// Everyone can see major donations. ?min= changes the lower limit for this view only.
+// Major donations: every centre has its own lower limit (centres.major_donation_min).
+// ?centre_id= limits the list to one centre.
 app.get('/api/donations/major', requireAuth, (req, res) => {
-  const savedThreshold = getMajorDonationMin();
-  let threshold = savedThreshold;
-  if (req.query.min !== undefined && req.query.min !== '') {
-    const min = Number(req.query.min);
-    if (!Number.isFinite(min) || min < 0) return res.status(400).json({ error: 'The lower limit must be 0 or more' });
-    threshold = min;
+  const centres = db.prepare(`
+    SELECT c.id, c.name, c.major_donation_min, z.name AS zone_name, r.name AS region_name
+    FROM centres c JOIN zones z ON z.id = c.zone_id JOIN regions r ON r.id = z.region_id
+    ORDER BY r.name COLLATE NOCASE, z.name COLLATE NOCASE, c.name COLLATE NOCASE
+  `).all().map((c) => ({ ...c, can_edit: H.canManageCentre(req.user, c.id) }));
+
+  let where = 'd.amount > c.major_donation_min';
+  const args = [];
+  if (req.query.centre_id) {
+    where += ' AND d.centre_id = ?';
+    args.push(Number(req.query.centre_id));
   }
 
   const donations = db.prepare(`
     SELECT d.id,
            CASE WHEN d.donor_name != '' THEN d.donor_name ELSE u.username END AS username,
-           d.amount, d.event_tag, d.note, d.is_manual, d.created_at, d.centre_id, c.name AS centre_name
+           d.amount, d.event_tag, d.note, d.is_manual, d.created_at, d.centre_id,
+           c.name AS centre_name, c.major_donation_min
     FROM donations d
     JOIN users u ON d.user_id = u.id
-    LEFT JOIN centres c ON c.id = d.centre_id
-    WHERE d.amount > ?
+    JOIN centres c ON c.id = d.centre_id
+    WHERE ${where}
     ORDER BY d.id DESC
-  `).all(threshold);
+  `).all(...args);
 
   const total = donations.reduce((sum, d) => sum + d.amount, 0);
-  res.json({ threshold, saved_threshold: savedThreshold, total, count: donations.length, donations });
+  res.json({ centres, my_centre_id: req.user.centre_id, total, count: donations.length, donations });
 });
 
 app.get('/api/donations/by-person', requireAuth, requireAdmin, (req, res) => {
@@ -1934,8 +1982,8 @@ app.delete('/api/donations/:id', requireAuth, requireAdmin, (req, res) => {
   res.json({ message: 'Donation deleted and event funds re-synced.' });
 });
 
-// Public transparency ledger: money raised by each event, grouped by centre
-app.get('/api/funds', (req, res) => {
+// Transparency ledger for signed-in members: money raised by each event, grouped by centre
+app.get('/api/funds', requireAuth, (req, res) => {
   const events = db.prepare(`
     SELECT e.id, e.title, e.event_date, e.total_fund, e.centre_id,
            c.name AS centre_name, z.name AS zone_name, r.name AS region_name
@@ -2317,7 +2365,7 @@ function canDeleteReport(user, r) {
 
 app.get('/api/reports', requireAuth, (req, res) => {
   const rows = db.prepare(`
-    SELECT r.id, r.report_type, r.title, r.period_label, r.summary_json, r.created_at,
+    SELECT r.id, r.report_type, r.title, r.period_label, r.created_at,
            r.scope_type, r.scope_id, r.scope_label,
            COALESCE(u.username, 'Former member') AS generated_by
     FROM reports r
@@ -2338,7 +2386,6 @@ app.get('/api/reports', requireAuth, (req, res) => {
       generated_by: r.generated_by,
       created_at: r.created_at,
       can_delete: canDeleteReport(req.user, r),
-      summary: JSON.parse(r.summary_json),
     }));
 
   res.json({ count: reports.length, reports });
@@ -2526,15 +2573,13 @@ app.get('/api/reports/:id/pdf', requireAuth, async (req, res, next) => {
     const summary = JSON.parse(row.summary_json);
     const report = { ...row, summary };
 
-    // Admins may preview a different amount with ?min_amount=; everyone else uses the saved setting
-    let threshold = getMajorDonationMin();
-    if (H.isAdmin(req.user) && req.query.min_amount !== undefined && req.query.min_amount !== '') {
-      const override = Number(req.query.min_amount);
-      if (!Number.isFinite(override) || override < 0) {
-        return res.status(400).json({ error: 'min_amount must be 0 or more' });
-      }
-      threshold = override;
-    }
+    // Each centre's own major-donation limit applies
+    const coveredCentres = reportCentreIds(row);
+    const limits = coveredCentres.length
+      ? db.prepare(`SELECT name, major_donation_min FROM centres WHERE id IN (${coveredCentres.map(() => '?').join(', ')})`).all(...coveredCentres)
+      : [];
+    const distinct = Array.from(new Set(limits.map((l) => l.major_donation_min)));
+    const threshold = distinct.length === 1 ? distinct[0] : null; // null = differs per centre
 
     let majorDonations = [];
     const params = summary.query || reportQueryFromLabel(row);
@@ -2555,9 +2600,9 @@ app.get('/api/reports/:id/pdf', requireAuth, async (req, res, next) => {
         JOIN users u ON d.user_id = u.id
         LEFT JOIN houses h ON u.house_id = h.id
         LEFT JOIN centres c ON c.id = d.centre_id
-        WHERE (${whereAliased}) AND ${scopeFilter.sql} AND d.amount > ?
+        WHERE (${whereAliased}) AND ${scopeFilter.sql} AND d.amount > c.major_donation_min
         ORDER BY d.amount DESC, d.id ASC
-      `).all(...spec.whereArgs, ...scopeFilter.args, threshold);
+      `).all(...spec.whereArgs, ...scopeFilter.args);
     }
 
     const theme = db.getSetting('theme', null) || {};
@@ -2584,14 +2629,10 @@ app.get('/api/reports/:id/pdf', requireAuth, async (req, res, next) => {
 // ==========================================
 
 app.get('/api/admin/logs', requireAuth, requireAdmin, (req, res) => {
-  // Super Admins see everything; other admins see actions in their centres plus their own actions
-  let visSql = '1 = 1';
-  let visArgs = [];
-  if (!H.isSuper(req.user)) {
-    const scope = H.scopeSql(req.user, 'l.centre_id');
-    visSql = `(${scope.sql} OR l.actor_id = ?)`;
-    visArgs = [...scope.args, req.user.id];
-  }
+  // Only admins ABOVE someone can read that admin's actions (Super Admin reads everything)
+  const vis = H.subordinateLogsSql(req.user, 'l');
+  const visSql = vis.sql;
+  const visArgs = vis.args;
   const where = [visSql];
   const args = [...visArgs];
 
@@ -2665,6 +2706,9 @@ app.get('/api/admin/logs', requireAuth, requireAdmin, (req, res) => {
 
 // About page, Style Centre, uploads, gallery, event photos, People Lookup, report options
 registerFeatureRoutes(app, { PUBLIC_DIR, UPLOADS_DIR });
+
+// Census of people by centre, zone, region or the whole community
+require('./census').registerCensusRoutes(app);
 
 // ==========================================
 // FALLBACKS & ERROR HANDLING

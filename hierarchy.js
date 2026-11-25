@@ -175,6 +175,31 @@ function roleLabel(level, scopeId) {
 
 // ---------- Audit log ----------
 
+// Which admins' actions may `viewer` read? Only admins BELOW them, inside their area.
+//   Super Admin  -> everything
+//   Region Admin -> Zone & Centre Admins of their region
+//   Zone Admin   -> Centre Admins of their zone
+//   Centre Admin -> nobody (they have no subordinate admins)
+function subordinateLogsSql(viewer, alias = 'l') {
+  const level = Number(viewer.access_level);
+  if (level === 0) return { sql: '1 = 1', args: [] };
+  const list = (ids) => (ids.length ? ids.map(() => '?').join(', ') : 'NULL');
+  if (level === 1) {
+    const zones = db.prepare('SELECT id FROM zones WHERE region_id = ?').all(viewer.scope_id).map((r) => r.id);
+    const centres = centreIdsForScope('region', viewer.scope_id);
+    return {
+      sql: `((${alias}.actor_level = 2 AND ${alias}.actor_scope_id IN (${list(zones)}))
+             OR (${alias}.actor_level = 3 AND ${alias}.actor_scope_id IN (${list(centres)})))`,
+      args: [...zones, ...centres],
+    };
+  }
+  if (level === 2) {
+    const centres = centreIdsForScope('zone', viewer.scope_id);
+    return { sql: `(${alias}.actor_level = 3 AND ${alias}.actor_scope_id IN (${list(centres)}))`, args: centres };
+  }
+  return { sql: '0 = 1', args: [] };
+}
+
 function clientIp(req) {
   const fwd = String((req.headers && req.headers['x-forwarded-for']) || '').split(',')[0].trim();
   return (fwd || req.ip || (req.socket && req.socket.remoteAddress) || '').slice(0, 64);
@@ -188,14 +213,15 @@ function logAction(req, action, { targetType = '', targetId = null, centreId = n
   try {
     const u = req.user || {};
     db.prepare(`
-      INSERT INTO admin_logs (actor_id, actor_name, actor_login_id, actor_level, action, target_type, target_id,
-                              centre_id, summary, details_json, ip)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO admin_logs (actor_id, actor_name, actor_login_id, actor_level, actor_scope_id, action, target_type,
+                              target_id, centre_id, summary, details_json, ip)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       u.id ?? null,
       String(u.username || ''),
       u.login_id ?? null,
       u.access_level ?? null,
+      u.scope_id ?? null,
       String(action).slice(0, 60),
       String(targetType).slice(0, 40),
       targetId === null || targetId === undefined ? null : Number(targetId),
@@ -232,4 +258,5 @@ module.exports = {
   defaultCentreFor,
   roleLabel,
   logAction,
+  subordinateLogsSql,
 };

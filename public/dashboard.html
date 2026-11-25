@@ -751,7 +751,9 @@
           return;
         }
 
-        adminUsers = data.users;
+        // Anyone in the admin's centres can be picked as the donor of an offline donation
+        const donorRes = await fetch('/api/users/donors', { headers: { Authorization: `Bearer ${token}` } });
+        adminUsers = donorRes.ok ? (await donorRes.json()).users.map((u) => ({ ...u, status: 'approved' })) : [];
         if (hier) onProxyCentreChange();
 
         tbody.innerHTML = data.users.map((u) => {

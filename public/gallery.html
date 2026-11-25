@@ -13,10 +13,15 @@
   <div class="container">
     <div class="section" style="margin-bottom: 20px;">
       <div class="section-head">
-        <h2>Gallery</h2>
+        <h2 id="galleryTitle">Gallery</h2>
         <span class="total-pill" id="galleryCount">0 items</span>
       </div>
-      <p class="hint" style="margin-bottom: 0;">Photos and videos from our community.</p>
+      <p class="hint" style="margin-bottom: 0;">Every centre, zone and region has its own gallery, plus a General gallery for the whole community.</p>
+
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top: 12px;">
+        <label for="gallerySelect" style="margin:0;">Gallery</label>
+        <select id="gallerySelect" style="max-width: 420px;"></select>
+      </div>
 
       <div class="filter-bar" id="albumFilters"></div>
       <div class="filter-bar" style="margin-top: 8px;">
@@ -29,7 +34,7 @@
 
     <!-- Admin upload panel -->
     <div class="section" id="uploadSection" hidden style="margin-bottom: 20px;">
-      <h3>Add photos &amp; videos</h3>
+      <h3 id="uploadTitle">Add photos &amp; videos</h3>
       <p class="hint" style="margin: 4px 0 12px;">Photos up to 15 MB each, videos up to 250 MB (MP4 works on all phones).</p>
 
       <label class="drop-zone" id="dropZone" style="margin-top: 0;">
@@ -71,6 +76,48 @@
     let albumFilter = '';
     let kindFilter = 'all';
     let pending = []; // { file, previewUrl, caption }
+    let currentScope = null; // { type, id }
+    let canManageCurrent = false;
+
+    function scopeKey(sc) {
+      return `${sc.type}:${sc.id ?? ''}`;
+    }
+
+    async function loadGalleryList() {
+      const res = await fetch('/api/galleries', { headers: { Authorization: `Bearer ${token}` } });
+      if (res.status === 401) return logout();
+      const data = await res.json();
+      const opts = [];
+      const add = (g, indent, mine) => opts.push(
+        `<option value="${scopeKey(g)}">${'\u00a0\u00a0\u00a0'.repeat(indent)}${mine ? '★ ' : ''}${esc(g.name)}${
+          g.type === 'general' ? '' : ` (${g.type})`} · ${g.count}${g.can_manage ? ' ✎' : ''}</option>`);
+      const mine = data.mine || {};
+      add(data.general, 0, false);
+      for (const r of data.regions) {
+        add(r, 0, r.id === mine.region_id);
+        for (const z of r.zones) {
+          add(z, 1, z.id === mine.zone_id);
+          for (const c of z.centres) add(c, 2, c.id === mine.centre_id);
+        }
+      }
+      const sel = document.getElementById('gallerySelect');
+      sel.innerHTML = opts.join('');
+
+      // Start on: ?gallery= in the address, else your own centre's gallery, else General
+      const fromUrl = new URLSearchParams(location.search).get('gallery');
+      const preferred = currentScope ? scopeKey(currentScope)
+        : fromUrl || (mine.centre_id ? `centre:${mine.centre_id}` : 'general:');
+      const keepAlbum = albumFilter;
+      sel.value = Array.from(sel.options).some((o) => o.value === preferred) ? preferred : 'general:';
+      setScopeFromSelect();
+      albumFilter = keepAlbum;
+    }
+
+    function setScopeFromSelect() {
+      const [type, id] = document.getElementById('gallerySelect').value.split(':');
+      currentScope = { type, id: id ? Number(id) : null };
+      albumFilter = '';
+    }
 
     function esc(str) {
       return String(str ?? '')
@@ -113,7 +160,7 @@
         grid.innerHTML = `
           <div class="section welcome-box" style="grid-column: 1 / -1;">
             <h2>${items.length ? 'Nothing matches this filter' : 'No photos yet'}</h2>
-            <p class="hint" style="margin-bottom:0;">${isAdmin && !items.length ? 'Use “Add photos & videos” above to start the gallery.' : 'Check back soon.'}</p>
+            <p class="hint" style="margin-bottom:0;">${canManageCurrent && !items.length ? 'Use “Add photos & videos” above to start this gallery.' : 'Check back soon.'}</p>
           </div>`;
         return;
       }
@@ -142,7 +189,8 @@
     async function loadGallery() {
       const msg = document.getElementById('galleryMsg');
       try {
-        const res = await fetch('/api/gallery', { headers: { Authorization: `Bearer ${token}` } });
+        const q = new URLSearchParams({ scope_type: currentScope.type, scope_id: currentScope.id ?? '' });
+        const res = await fetch(`/api/gallery?${q}`, { headers: { Authorization: `Bearer ${token}` } });
         if (res.status === 401) return logout();
         const data = await res.json();
         if (!res.ok) {
@@ -152,6 +200,10 @@
         }
         items = data.items || [];
         albums = data.albums || [];
+        canManageCurrent = data.can_manage;
+        document.getElementById('galleryTitle').textContent = data.name;
+        document.getElementById('uploadSection').hidden = !canManageCurrent;
+        document.getElementById('uploadTitle').textContent = `Add photos & videos to ${data.name}`;
         if (albumFilter && !albums.includes(albumFilter)) albumFilter = '';
         renderFilters();
         renderGrid();
@@ -191,7 +243,7 @@
           headers: { Authorization: `Bearer ${token}` },
         });
         if (res.status === 401) return logout();
-        loadGallery();
+        loadGalleryList().then(loadGallery);
         return;
       }
 
@@ -300,7 +352,7 @@
         const res = await fetch('/api/gallery', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ items: uploaded }),
+          body: JSON.stringify({ items: uploaded, scope_type: currentScope.type, scope_id: currentScope.id }),
         });
         if (res.status === 401) return logout();
         const data = await res.json();
@@ -320,11 +372,16 @@
         msg.className = 'message success';
       }
       if (album) albumFilter = album;
-      loadGallery();
+      loadGalleryList().then(loadGallery);
     }
 
+    document.getElementById('gallerySelect').addEventListener('change', () => {
+      setScopeFromSelect();
+      clearPending();
+      loadGallery();
+    });
+
     if (isAdmin) {
-      document.getElementById('uploadSection').hidden = false;
       const input = document.getElementById('fileInput');
       input.accept = window.MEDIA_ACCEPT.all;
       input.addEventListener('change', () => {
@@ -357,7 +414,7 @@
       document.getElementById('clearPendingBtn').addEventListener('click', clearPending);
     }
 
-    loadGallery();
+    loadGalleryList().then(loadGallery);
   </script>
   <script src="/nav.js"></script>
 </body>

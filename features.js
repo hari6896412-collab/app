@@ -242,7 +242,8 @@ const FONT_CHOICES = [
 const THEME_PAGES = [
   '/', '/index.html', '/signup.html', '/dashboard.html', '/events.html', '/gallery.html',
   '/people.html', '/funds.html', '/reports.html', '/major-donations.html', '/houses.html',
-  '/admin-db.html', '/upload-event.html', '/style-centre.html',
+  '/admin-db.html', '/upload-event.html', '/style-centre.html', '/centres.html', '/admin-logs.html',
+  '/census.html',
 ];
 
 const DEFAULT_THEME = {
@@ -336,18 +337,6 @@ function directoryFieldDefs() {
     })),
   ];
   return { userFields, houseFields };
-}
-
-// ------------------------------------------
-// Report threshold
-// ------------------------------------------
-
-const DEFAULT_MAJOR_DONATION_MIN = 10000;
-
-function getMajorDonationMin() {
-  const saved = db.getSetting('report_options', null);
-  const num = saved && Number(saved.major_donation_min);
-  return Number.isFinite(num) && num >= 0 ? num : DEFAULT_MAJOR_DONATION_MIN;
 }
 
 // ------------------------------------------
@@ -486,36 +475,109 @@ function registerFeatureRoutes(app, { PUBLIC_DIR, UPLOADS_DIR }) {
     res.json({ message: 'Style reset to the original look.', theme: cleanTheme(DEFAULT_THEME) });
   });
 
-  // ---------- Gallery ----------
+  // ---------- Galleries ----------
+  // One General gallery (Super Admin) plus one gallery per region, zone and centre.
+  // Each is run by that area's admins; higher admins can run every gallery below them.
+
+  const GALLERY_TYPES = ['general', 'region', 'zone', 'centre'];
+
+  function parseGalleryScope(type, id) {
+    const t = GALLERY_TYPES.includes(type) ? type : 'general';
+    if (t === 'general') return { type: 'general', id: null };
+    const num = Number(id);
+    const exists = (t === 'region' && H.getRegion(num)) || (t === 'zone' && H.getZone(num)) || (t === 'centre' && H.getCentre(num));
+    return exists ? { type: t, id: num } : null;
+  }
+
+  function canManageGallery(user, type, id) {
+    if (type === 'general') return H.isSuper(user);
+    return H.canManageScope(user, type, id);
+  }
+
+  function galleryLabel(type, id) {
+    if (type === 'general') return 'General gallery';
+    if (type === 'region') return `${(H.getRegion(id) || {}).name || 'Region'} (region)`;
+    if (type === 'zone') return `${(H.getZone(id) || {}).name || 'Zone'} (zone)`;
+    return `${(H.getCentre(id) || {}).name || 'Centre'} (centre)`;
+  }
+
+  // Every gallery, with item counts and what this account may manage
+  app.get('/api/galleries', requireAuth, (req, res) => {
+    const counts = new Map(
+      db.prepare('SELECT scope_type, scope_id, COUNT(*) AS n FROM gallery_items GROUP BY scope_type, scope_id').all()
+        .map((r) => [`${r.scope_type}:${r.scope_id ?? ''}`, r.n])
+    );
+    const count = (type, id) => counts.get(`${type}:${id ?? ''}`) || 0;
+
+    const myCentre = H.getCentre(req.user.centre_id);
+    const regions = db.prepare('SELECT id, name FROM regions ORDER BY name COLLATE NOCASE').all();
+    const zones = db.prepare('SELECT id, region_id, name FROM zones ORDER BY name COLLATE NOCASE').all();
+    const centres = db.prepare('SELECT id, zone_id, name FROM centres ORDER BY name COLLATE NOCASE').all();
+
+    res.json({
+      general: { type: 'general', id: null, name: 'General gallery', count: count('general', null), can_manage: H.isSuper(req.user) },
+      regions: regions.map((r) => ({
+        type: 'region', id: r.id, name: r.name, count: count('region', r.id),
+        can_manage: canManageGallery(req.user, 'region', r.id),
+        zones: zones.filter((z) => z.region_id === r.id).map((z) => ({
+          type: 'zone', id: z.id, name: z.name, count: count('zone', z.id),
+          can_manage: canManageGallery(req.user, 'zone', z.id),
+          centres: centres.filter((c) => c.zone_id === z.id).map((c) => ({
+            type: 'centre', id: c.id, name: c.name, count: count('centre', c.id),
+            can_manage: canManageGallery(req.user, 'centre', c.id),
+          })),
+        })),
+      })),
+      mine: myCentre
+        ? { centre_id: myCentre.id, zone_id: myCentre.zone_id, region_id: myCentre.region_id }
+        : null,
+    });
+  });
+
   app.get('/api/gallery', requireAuth, (req, res) => {
+    const scope = parseGalleryScope(req.query.scope_type, req.query.scope_id);
+    if (!scope) return res.status(404).json({ error: 'Gallery not found' });
+
+    const canManage = canManageGallery(req.user, scope.type, scope.id);
     const items = db.prepare(`
       SELECT g.id, g.media_type, g.url, g.caption, g.album, g.created_at, g.uploaded_by AS uploaded_by_id,
              COALESCE(u.username, 'Former member') AS uploaded_by
       FROM gallery_items g
       LEFT JOIN users u ON u.id = g.uploaded_by
+      WHERE g.scope_type = ? AND g.scope_id IS ?
       ORDER BY g.id DESC
-    `).all().map((i) => ({
-      ...i,
-      // Admins manage what they uploaded; the Super Admin manages everything
-      can_manage: H.isSuper(req.user) || (isAdmin(req.user) && i.uploaded_by_id === req.user.id),
-    }));
+    `).all(scope.type, scope.id).map((i) => ({ ...i, can_manage: canManage }));
 
     const albums = Array.from(new Set(items.map((i) => i.album).filter(Boolean))).sort((a, b) =>
       a.localeCompare(b)
     );
 
-    res.json({ count: items.length, albums, items });
+    res.json({
+      scope_type: scope.type,
+      scope_id: scope.id,
+      name: galleryLabel(scope.type, scope.id),
+      can_manage: canManage,
+      count: items.length,
+      albums,
+      items,
+    });
   });
 
   app.post('/api/gallery', requireAuth, requireAdmin, (req, res) => {
+    const scope = parseGalleryScope(req.body && req.body.scope_type, req.body && req.body.scope_id);
+    if (!scope) return res.status(400).json({ error: 'Choose a gallery' });
+    if (!canManageGallery(req.user, scope.type, scope.id)) {
+      return res.status(403).json({ error: 'You can only add to galleries in your own area.' });
+    }
+
     const itemsIn = Array.isArray(req.body && req.body.items) ? req.body.items.slice(0, 100) : [];
     if (itemsIn.length === 0) {
       return res.status(400).json({ error: 'Upload at least one photo or video.' });
     }
 
     const insert = db.prepare(`
-      INSERT INTO gallery_items (media_type, url, caption, album, uploaded_by)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO gallery_items (media_type, url, caption, album, uploaded_by, scope_type, scope_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
 
     const saved = [];
@@ -526,7 +588,7 @@ function registerFeatureRoutes(app, { PUBLIC_DIR, UPLOADS_DIR }) {
         if (!kind) continue;
         const caption = cleanText(item.caption, 200);
         const album = cleanText(item.album, 60);
-        const info = insert.run(kind, url, caption, album, req.user.id);
+        const info = insert.run(kind, url, caption, album, req.user.id, scope.type, scope.id);
         saved.push({ id: info.lastInsertRowid, media_type: kind, url, caption, album });
       }
     });
@@ -536,45 +598,55 @@ function registerFeatureRoutes(app, { PUBLIC_DIR, UPLOADS_DIR }) {
       return res.status(400).json({ error: 'No valid uploaded files were provided.' });
     }
 
+    const label = galleryLabel(scope.type, scope.id);
     H.logAction(req, 'gallery.add', {
-      targetType: 'gallery', summary: `Added ${saved.length} item(s) to the gallery${saved[0].album ? ` (album "${saved[0].album}")` : ''}`,
-      details: { ids: saved.map((i) => i.id) },
+      targetType: 'gallery', centreId: scope.type === 'centre' ? scope.id : null,
+      summary: `Added ${saved.length} item(s) to ${label}${saved[0].album ? ` (album "${saved[0].album}")` : ''}`,
+      details: { gallery: label, ids: saved.map((i) => i.id) },
     });
-    res.status(201).json({ message: `${saved.length} item(s) added to the gallery.`, items: saved });
+    res.status(201).json({ message: `${saved.length} item(s) added to ${label}.`, items: saved });
   });
 
-  const canManageGalleryItem = (user, item) => H.isSuper(user) || (isAdmin(user) && item.uploaded_by === user.id);
-
-  app.put('/api/gallery/:id', requireAuth, requireAdmin, (req, res) => {
+  function findManageableItem(req, res) {
     const id = Number(req.params.id);
     const existing = Number.isInteger(id) && db.prepare('SELECT * FROM gallery_items WHERE id = ?').get(id);
-    if (!existing) return res.status(404).json({ error: 'Gallery item not found' });
-    if (!canManageGalleryItem(req.user, existing)) {
-      return res.status(403).json({ error: 'Only the admin who uploaded this (or the Super Admin) can change it.' });
+    if (!existing) {
+      res.status(404).json({ error: 'Gallery item not found' });
+      return null;
     }
+    if (!canManageGallery(req.user, existing.scope_type, existing.scope_id)) {
+      res.status(403).json({ error: 'This gallery is outside your area.' });
+      return null;
+    }
+    return existing;
+  }
+
+  app.put('/api/gallery/:id', requireAuth, requireAdmin, (req, res) => {
+    const existing = findManageableItem(req, res);
+    if (!existing) return;
 
     const caption = req.body && req.body.caption !== undefined ? cleanText(req.body.caption, 200) : existing.caption;
     const album = req.body && req.body.album !== undefined ? cleanText(req.body.album, 60) : existing.album;
-    db.prepare('UPDATE gallery_items SET caption = ?, album = ? WHERE id = ?').run(caption, album, id);
+    db.prepare('UPDATE gallery_items SET caption = ?, album = ? WHERE id = ?').run(caption, album, existing.id);
     H.logAction(req, 'gallery.update', {
-      targetType: 'gallery', targetId: id, summary: `Edited gallery item #${id}`,
+      targetType: 'gallery', targetId: existing.id,
+      centreId: existing.scope_type === 'centre' ? existing.scope_id : null,
+      summary: `Edited item #${existing.id} in ${galleryLabel(existing.scope_type, existing.scope_id)}`,
       details: { before: { caption: existing.caption, album: existing.album }, after: { caption, album } },
     });
     res.json({ message: 'Gallery item updated.' });
   });
 
   app.delete('/api/gallery/:id', requireAuth, requireAdmin, (req, res) => {
-    const id = Number(req.params.id);
-    const existing = Number.isInteger(id) && db.prepare('SELECT * FROM gallery_items WHERE id = ?').get(id);
-    if (!existing) return res.status(404).json({ error: 'Gallery item not found' });
-    if (!canManageGalleryItem(req.user, existing)) {
-      return res.status(403).json({ error: 'Only the admin who uploaded this (or the Super Admin) can delete it.' });
-    }
+    const existing = findManageableItem(req, res);
+    if (!existing) return;
 
-    db.prepare('DELETE FROM gallery_items WHERE id = ?').run(id);
+    db.prepare('DELETE FROM gallery_items WHERE id = ?').run(existing.id);
     removeIfUnused(existing.url);
     H.logAction(req, 'gallery.delete', {
-      targetType: 'gallery', targetId: id, summary: `Deleted gallery ${existing.media_type} #${id}${existing.caption ? ` "${existing.caption}"` : ''}`,
+      targetType: 'gallery', targetId: existing.id,
+      centreId: existing.scope_type === 'centre' ? existing.scope_id : null,
+      summary: `Deleted ${existing.media_type} #${existing.id}${existing.caption ? ` "${existing.caption}"` : ''} from ${galleryLabel(existing.scope_type, existing.scope_id)}`,
     });
     res.json({ message: 'Removed from gallery.' });
   });
@@ -733,33 +805,10 @@ function registerFeatureRoutes(app, { PUBLIC_DIR, UPLOADS_DIR }) {
     res.json({ message: 'People Lookup privacy settings saved.', settings });
   });
 
-  // ---------- Report options (major donation threshold) ----------
-  app.get('/api/settings/report-options', requireAuth, (req, res) => {
-    res.json({ major_donation_min: getMajorDonationMin() });
-  });
-
-  app.put('/api/settings/report-options', requireAuth, requireSuper, (req, res) => {
-    const raw = req.body && req.body.major_donation_min;
-    const amount = Math.round(Number(raw) * 100) / 100;
-    if (raw === '' || raw === null || raw === undefined || !Number.isFinite(amount) || amount < 0) {
-      return res.status(400).json({ error: 'Enter an amount of 0 or more.' });
-    }
-    const before = getMajorDonationMin();
-    db.setSetting('report_options', { major_donation_min: amount }, req.user.id);
-    H.logAction(req, 'site.major_donation_limit', {
-      targetType: 'site', summary: `Changed the major-donation lower limit from ₹${before} to ₹${amount}`,
-      details: { before, after: amount },
-    });
-    res.json({
-      message: `Major donations are now those above ₹${amount.toLocaleString('en-IN')} (Major Donations page and PDF reports).`,
-      major_donation_min: amount,
-    });
-  });
 }
 
 module.exports = {
   registerFeatureRoutes,
-  getMajorDonationMin,
   isUploadUrl,
   makeFileRemover,
   isUrlStillUsed,

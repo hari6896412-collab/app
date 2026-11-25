@@ -106,19 +106,20 @@
         container.innerHTML = customColumns.map((col) => {
           const type = col.data_type || 'text';
           const fieldId = `custom_${escapeHtml(col.column_name)}`;
+          const req = col.is_required ? 'required' : '';
           let inputHtml = '';
 
           if (type === 'select') {
             const opts = Array.isArray(col.options) ? col.options : [];
             inputHtml = `
-              <select id="${fieldId}" data-col="${escapeHtml(col.column_name)}" required>
+              <select id="${fieldId}" data-col="${escapeHtml(col.column_name)}" ${req}>
                 <option value="">-- Select ${escapeHtml(col.display_label)} --</option>
                 ${opts.map((opt) => `<option value="${escapeHtml(opt)}">${escapeHtml(opt)}</option>`).join('')}
               </select>
             `;
           } else if (type === 'boolean') {
             inputHtml = `
-              <select id="${fieldId}" data-col="${escapeHtml(col.column_name)}" required>
+              <select id="${fieldId}" data-col="${escapeHtml(col.column_name)}" ${req}>
                 <option value="">-- Select Yes or No --</option>
                 <option value="Yes">Yes</option>
                 <option value="No">No</option>
@@ -131,14 +132,16 @@
                 type="${escapeHtml(type)}"${stepAttr}
                 id="${fieldId}"
                 data-col="${escapeHtml(col.column_name)}"
-                placeholder="Enter ${escapeHtml(col.display_label)}"
-                required
+                placeholder="Enter ${escapeHtml(col.display_label)}${col.is_required ? '' : ' (optional)'}"
+                ${req}
               />
             `;
           }
 
           return `
-            <label for="${fieldId}">${escapeHtml(col.display_label)}</label>
+            <label for="${fieldId}">${escapeHtml(col.display_label)}${col.is_required
+              ? ' <span style="color:#b91c1c;" title="Required">*</span>'
+              : ' <span class="stat-sub">(optional)</span>'}</label>
             ${inputHtml}
           `;
         }).join('');
